@@ -96,7 +96,7 @@ class PodmanProvider:
         """Build this spec's channel images locally when they are missing
         (design §3.10, "build the IPA RPMs ourselves").
 
-        The control node already produced an SRPM (``ci/scripts/make-srpms.sh``)
+        The control node already produced an SRPM (``scripts/make-srpms.sh``)
         and named it in the spec's ``build.srpm``; here, on this host, we
         compile it inside the dedicated ``freeipa-ci/build`` image and bake the
         channel ``full`` image from the resulting binary RPMs. Alternatively,
@@ -159,12 +159,12 @@ class PodmanProvider:
                 if is_channel(ref):
                     raise PodmanError(
                         f'channel {ref} (tag {imgref}) not found on this '
-                        f'host; build it with ci/images/build.sh '
+                        f'host; build it with images/build.sh '
                         f'--channel {ref} (or load the saved image '
                         f'tarball) and re-run')
                 raise PodmanError(
                     f'image {ref} not found on this host; build it with '
-                    f'ci/images/build.sh (or load the saved image tarball) '
+                    f'images/build.sh (or load the saved image tarball) '
                     f'and re-run')
             rc, out = self._podman(['image', 'inspect', img_id,
                                     '--format',

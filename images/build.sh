@@ -2,9 +2,9 @@
 # build.sh (A3) — build the freeipa-ci base and full images.
 #
 # Usage:
-#   ci/images/build.sh --rpms /path/to/rpms --sha 962ac6d0e [options]
-#   ci/images/build.sh --srpm /path/to/dist/srpms [options]
-#   ci/images/build.sh --ipa-from-copr --copr owner/project [options]
+#   images/build.sh --rpms /path/to/rpms --sha 962ac6d0e [options]
+#   images/build.sh --srpm /path/to/dist/srpms [options]
+#   images/build.sh --ipa-from-copr --copr owner/project [options]
 #
 # Options:
 #   --rpms DIR        Directory containing IPA dev-build RPMs (x86_64 +
@@ -61,12 +61,12 @@
 #   --tool TOOL       Container tool: podman (default) or docker.
 #
 # Example (validation host):
-#   ci/images/build.sh --rpms /root/rpmbuild/RPMS --sha 962ac6d0e \
+#   images/build.sh --rpms /root/rpmbuild/RPMS --sha 962ac6d0e \
 #       --exclude freeipa-server-trust-ad --exclude freeipa-client-samba
 #
 # Build the IPA RPMs ourselves from a `make srpms` SRPM (control node ships
 # the SRPM to the runner; the runner bakes the channel image from it):
-#   ci/images/build.sh --srpm /root/freeipa/dist/srpms --channel current
+#   images/build.sh --srpm /root/freeipa/dist/srpms --channel current
 set -euo pipefail
 
 RPMS=

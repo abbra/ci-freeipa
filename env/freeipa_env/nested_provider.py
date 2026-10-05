@@ -122,10 +122,10 @@ class NestedProvider:
 
     # ---------------------------------------------------------------- bootstrap
     def _bootstrap(self, vm):
-        """Ship the ci/ tree + inner spec to the VM, ensure the image."""
-        local_ci = os.path.dirname(queue.ENVROOT)          # ci/
+        """Ship the ci-freeipa tree + inner spec to the VM, ensure the image."""
+        local_ci = os.path.dirname(queue.ENVROOT)          # repo root
         remote_ci_parent = os.path.dirname(self._remote_ci())
-        print(f'== vm {vm.target}: rsync ci/ tree '
+        print(f'== vm {vm.target}: rsync ci-freeipa tree '
               f'({local_ci} -> {remote_ci_parent})')
         rsync_to(vm, local_ci, remote_ci_parent)
         state_rwd = self._remote_workdir()

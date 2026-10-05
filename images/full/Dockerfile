@@ -40,7 +40,7 @@ ARG PIN_SPECS=
 # the enabled COPR + distro repos).
 ARG IPA_DNF_SPECS=
 
-# The build context is prepared by ci/images/build.sh: it contains rpms/
+# The build context is prepared by images/build.sh: it contains rpms/
 # with the selected IPA RPMs for the target SHA.
 COPY rpms/ /root/rpms/
 

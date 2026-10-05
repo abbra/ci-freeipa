@@ -1,4 +1,9 @@
 # CI modernization — implementation TODO
+# NOTE (development log, historical): this checklist was written while the
+# CI code lived in the freeipa repository's `ci/` tree. Paths like
+# `ci/env/`, `ci/images/` refer to that pre-split layout; the same content
+# now lives at the root of this repository (`env/`, `images/`, `queues/`,
+# `scripts/`, `tmt/`). See README.md for the repository split.
 
 Implementation of `doc/designs/ci_modernization.md`. Validation host:
 `root@192.168.122.215` (Fedora 44, podman 5.8.4, 2 vCPU / 4 GB). Target

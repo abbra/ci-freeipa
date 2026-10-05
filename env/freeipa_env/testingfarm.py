@@ -5,8 +5,9 @@ instead of on a pre-allocated ssh runner. A runner's whole job subsequence
 becomes **one** TF request (M13): the provisioned guest (a VM, not our host)
 checks out the repo, builds freeipa's SRPM and the channel images ONCE, and
 reuses them across every preset in the batch -- then runs the same
-up/run/down flow per preset (the tmt plan ``freeipa-env`` in ``ci/tmt``, whose
-script ``tf-runner.sh`` drives one ``tf-job.sh`` child per preset). One
+up/run/down flow per preset (the pinned tmt plan ``freeipa-env`` lives in
+the FreeIPA repo and discovers this repo's test at the pinned ref; its
+``tf-runner.sh`` drives one ``tf-job.sh`` child per preset). One
 request per subsequence (instead of the old one request per job) is what
 makes the prebuilt SRPM/channel image reusable: build once, run N presets.
 
@@ -45,6 +46,8 @@ from .runner import Runner, RunnerTransportError
 DEFAULT_URL = 'https://api.testing-farm.io'
 DEFAULT_COMPOSE = 'Fedora-44'
 DEFAULT_ARCH = 'x86_64'
+# The plan node in the FreeIPA repo under test; that plan pins this repo
+# (discover url + ref) and this test is discovered from it.
 DEFAULT_PLAN = '/ci/tmt/plans/freeipa-env'
 DEFAULT_POLL = 30  # seconds between GETs
 TERMINAL_STATES = ('complete', 'error', 'canceled', 'cancel-requested')
@@ -114,7 +117,7 @@ class TestingFarmClient:
 
 # --- artifacts -----------------------------------------------------------
 
-_DATA_DIR_RE = re.compile(r'/ci/tmt/tests/freeipa-env-\d+/data/?$')
+_DATA_DIR_RE = re.compile(r'/tmt/tests/freeipa-env-\d+/data/?$')
 
 # an artifact href's path after the tmt test data dir (freeipa-env-N/data/):
 # the reliable anchor for mapping into the local workdir, immune to the

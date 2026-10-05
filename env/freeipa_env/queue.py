@@ -1,7 +1,7 @@
 """Ordered preset queues for the CI supervisor (see supervisor.py).
 
 A queue file is an ordered list of preset paths, resolved relative to
-``ci/env/`` (this package's parent directory). Order is the scheduling
+``env/`` (this package's parent directory). Order is the scheduling
 order: the supervisor hands jobs to runners starting at the front of the
 list, one job at a time per runner (PRCI-style run queues; with a single
 runner the queue order is exactly the run order).
@@ -28,7 +28,7 @@ ENVROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class QueueJob:
     def __init__(self, preset_rel, note=None):
-        self.preset_rel = preset_rel  # relative to ENVROOT (ci/env)
+        self.preset_rel = preset_rel  # relative to ENVROOT (env)
         self.note = note
         self.path = os.path.join(ENVROOT, preset_rel)
 

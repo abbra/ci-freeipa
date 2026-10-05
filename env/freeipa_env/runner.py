@@ -1,11 +1,11 @@
 """Runner transports for the queue supervisor.
 
 A *runner* is a host that can execute a queued job (``podman`` + systemd
-plus a copy of the repo's ``ci/`` tree). The supervisor drives every
+plus a copy of this ci-freeipa tree). The supervisor drives every
 runner through one small interface::
 
     check()                          -> description str (SupervisorError)
-    bootstrap(remote_ci)             -> sync the local ci/ tree to the runner
+    bootstrap(remote_ci)             -> sync the local ci-freeipa tree to the runner
     ship_file(local, remote_dir)     -> ship one file (the SRPM) to the runner
     resolve_images(remote_ci, rels, timeout) -> (rc, out)
     run_job(job, remote_ci, jobs_dir, timeout_s, keep_on_failure)
@@ -26,8 +26,9 @@ Three transports (mirroring the backend pattern of vmbackend.py):
   home. Requires ``podman`` on the control node.
 * ``TestingFarmRunner`` (spec ``testing-farm``) — no ssh and no
   pre-allocated host: each job becomes one Testing Farm request (HTTP
-  API); the provisioned guest checks out the repo and runs the tmt plan
-  in ``ci/tmt`` which performs the identical up/run/down flow there.
+  API); the provisioned guest checks out the FreeIPA repo and runs the
+  pinned ``freeipa-env`` plan there, which discovers this repo's test at
+  the pinned ref and performs the identical up/run/down flow on the guest.
   See ``testingfarm.py``.
 
 All transports share the job recipe (``up`` -> ``run`` -> ``down`` under
@@ -43,7 +44,7 @@ import time
 
 from .queue import ENVROOT
 
-REPO_CI_DIR = os.path.dirname(ENVROOT)  # the ci/ directory
+REPO_CI_DIR = os.path.dirname(ENVROOT)  # the ci-freeipa tree root
 
 
 class Runner:
@@ -158,7 +159,7 @@ class SshRunner(Runner):
         return out.strip()
 
     def bootstrap(self, remote_ci):
-        """rsync the local ci/ tree to the runner (``~/...`` expands
+        """rsync the local ci-freeipa tree to the runner (``~/...`` expands
         remotely against the ssh user's home)."""
         self._rsync(REPO_CI_DIR + '/', f'{remote_ci}/')
 
@@ -216,7 +217,7 @@ class LocalRunner(Runner):
         return out.strip()
 
     def bootstrap(self, remote_ci):
-        """Copy the local ci/ tree to the runner location (local copy)."""
+        """Copy the local ci-freeipa tree to the runner location (local copy)."""
         dst = self._p(remote_ci)
         try:
             shutil.copytree(REPO_CI_DIR, dst, dirs_exist_ok=True)

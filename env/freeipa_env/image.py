@@ -37,7 +37,7 @@ def channel_tag(ref):
 
 def channel_name(ref):
     """Abstract channel name -> short channel name (``current`` / ``next`` /
-    ``previous``), the value ``ci/images/build.sh --channel NAME`` takes.
+    ``previous``), the value ``images/build.sh --channel NAME`` takes.
     Returns ``None`` if ``ref`` is not a known abstract channel."""
     if ref in CHANNELS:
         return ref.split('-', 1)[1]

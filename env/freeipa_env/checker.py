@@ -99,7 +99,7 @@ def discover(paths):
 
 
 def check_paths(paths=None):
-    """Check the given paths (default: all presets under ci/env/presets).
+    """Check the given paths (default: all presets under env/presets).
     Returns (results, missing) where results is [(path, [errors])]."""
     if not paths:
         paths = [os.path.join(queue.ENVROOT, 'presets')]

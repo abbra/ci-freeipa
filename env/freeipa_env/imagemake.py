@@ -3,11 +3,11 @@
 Replaces the "consume RPMs delivered by a build farm" model with a
 self-contained build lane:
 
-  1. the control node runs `make srpms` (``ci/scripts/make-srpms.sh``) to
+  1. the control node runs `make srpms` (``scripts/make-srpms.sh``) to
      produce a ``freeipa-<ver>.src.rpm`` from the current git snapshot;
   2. that SRPM is shipped to the host that runs the environment (locally for
      a single machine, rsynced by the supervisor for a runner);
-  3. on that host, ``ci/images/build.sh --srpm`` compiles the SRPM inside the
+  3. on that host, ``images/build.sh --srpm`` compiles the SRPM inside the
      dedicated ``freeipa-ci/build`` image (base + every BuildRequires) and
      bakes the ``freeipa-ci/full:<dist>`` image from the freshly built binary
      RPMs, tagging it with the build channel.
@@ -34,8 +34,8 @@ class ImageBuildError(Exception):
 
 
 def _images_dir():
-    """Directory holding ci/images/build.sh (the repo's ci/images tree)."""
-    # This file is ci/env/freeipa_env/imagemake.py -> up 2 dirs is ci/.
+    """Directory holding images/build.sh (the repo's images tree)."""
+    # This file is env/freeipa_env/imagemake.py -> up 2 dirs is the repo root.
     return os.path.abspath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', '..', 'images'))
 
@@ -115,7 +115,7 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
         if not copr_ipa and not srpm:
             raise ImageBuildError(
                 f'channel {ref!r} needs a build but no build.srpm is set on '
-                f'this env; run `ci/scripts/make-srpms.sh` and add a `build:` '
+                f'this env; run `scripts/make-srpms.sh` and add a `build:` '
                 f'block (or pass --srpm to the ensure command)')
         _build_one(tool, srpm, cname, dist, tag, workdir, force, copr,
                    copr_ipa=copr_ipa, ipa_packages=ipa_packages)

@@ -182,7 +182,7 @@ def cmd_ensure(args):
     """Build the preset's channel images ourselves (design §3.10) when they
     are missing on this host — a provider task, the build-side counterpart
     of `resolve`. Consumes the spec's `build.srpm` (the SRPM the control node
-    produced with ci/scripts/make-srpms.sh); absent channels are built in the
+    produced with scripts/make-srpms.sh); absent channels are built in the
     dedicated build image and baked into the channel `full` image. Present
     channels are left alone unless `--build` (or `build.force`) is set.
     Prints one line per channel: `<ref> <concrete> <image_id>`."""
@@ -205,7 +205,7 @@ def cmd_ensure(args):
 def cmd_check(args):
     """Parse + validate preset files without spawning anything (CI gating).
 
-    Checks every preset (default: all under ci/env/presets) parses as an
+    Checks every preset (default: all under env/presets) parses as an
     EnvSpec and passes the provider's read-only sanity checks. Exit 0 iff
     every preset is sound and no given path was missing."""
     from .checker import check_paths
@@ -412,7 +412,7 @@ def cmd_run(args):
         # per-test captured stdout/stderr + traceback report to
         # /root/ipa-env/logs/report.html; it rides the same /root/ipa-env cp
         # as the per-test trees and is parsed by the report's Per-test logs
-        # section. pytest-html must be installed in the image (ci/images/full).
+        # section. pytest-html must be installed in the image (images/full).
         for x in run.ignore:
             argv += ['--ignore', x]
         for x in run.deselect:
@@ -587,28 +587,28 @@ def cmd_queue(args):
         return 1
 
 
-def _git_value(args, fallback=None):
-    """git plumbing value for the current checkout (best effort)."""
+def _git_value(args, fallback=None, cwd=None):
+    """git plumbing value for a checkout (best effort; default: current)."""
     import subprocess
     try:
         p = subprocess.run(['git'] + args, capture_output=True, text=True,
-                           timeout=10)
+                           timeout=10, cwd=cwd)
         return p.stdout.strip() or fallback
     except (OSError, subprocess.TimeoutExpired):
         return fallback
 
 
-def _default_tf_ref():
+def _default_tf_ref(cwd=None):
     """Default git ref for the TF guest: prefer the current branch NAME over
     the HEAD SHA. TF distinguishes a branch from a raw ref and a bare SHA is
     not an advertised ref on most remotes (e.g. GitHub), so it fails with
     ``Failed to fetch ref <sha>: retries exhausted``; a branch name is always
     fetchable. On a detached HEAD there is no branch, so fall back to the SHA.
     """
-    branch = _git_value(['symbolic-ref', '--short', 'HEAD'])
+    branch = _git_value(['symbolic-ref', '--short', 'HEAD'], cwd=cwd)
     if branch:
         return branch
-    return _git_value(['rev-parse', 'HEAD']) or 'HEAD'
+    return _git_value(['rev-parse', 'HEAD'], cwd=cwd) or 'HEAD'
 
 
 def _tf_config(args):
@@ -622,18 +622,34 @@ def _tf_config(args):
         print('error: testing-farm runner: no API token (pass --tf-token '
               'or set TESTING_FARM_API_TOKEN)', file=sys.stderr)
         return None
-    repo_url = getattr(args, 'tf_repo_url', None) or \
-        _git_value(['config', 'remote.origin.url'])
+    # The repo under test is a freeipa checkout, never this ci-freeipa one:
+    # its URL/ref default from --freeipa-src, or must be given explicitly.
+    src = getattr(args, 'freeipa_src', None)
+    repo_url = getattr(args, 'tf_repo_url', None)
     if not repo_url:
-        print('error: testing-farm runner: no repo URL (pass '
-              '--tf-repo-url; this checkout has no origin remote)',
-              file=sys.stderr)
-        return None
+        if not src:
+            print('error: testing-farm runner: the repo under test is a '
+                  'freeipa checkout, not this ci-freeipa one; pass '
+                  '--freeipa-src DIR (its origin remote and branch are '
+                  'used as defaults) or --tf-repo-url', file=sys.stderr)
+            return None
+        repo_url = _git_value(['config', 'remote.origin.url'], cwd=src)
+        if not repo_url:
+            print(f'error: testing-farm runner: {src} has no origin '
+                  'remote (pass --tf-repo-url)', file=sys.stderr)
+            return None
+    ref = getattr(args, 'tf_ref', None)
+    if not ref:
+        if not src:
+            print('error: testing-farm runner: no ref; pass --freeipa-src '
+                  'DIR or --tf-ref', file=sys.stderr)
+            return None
+        ref = _default_tf_ref(cwd=src)
     cfg = {
         'token': token,
         'url': getattr(args, 'tf_url', None),
         'repo_url': repo_url,
-        'ref': getattr(args, 'tf_ref', None) or _default_tf_ref(),
+        'ref': ref,
         'arch': getattr(args, 'tf_arch', None),
         'compose': getattr(args, 'tf_compose', None),
         'plan': getattr(args, 'tf_plan', None),
@@ -652,7 +668,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         prog='freeipa-env',
         description='Provision and drive FreeIPA CI environments '
-                    '(doc/designs/ci_modernization.md).')
+                    '(design: doc/designs/ci_modernization.md in the '
+                    'freeipa repository).')
     p.add_argument('--tool', default='podman',
                    help='container tool (default: podman)')
     p.add_argument('--seccomp', default=None,
@@ -838,7 +855,7 @@ def main(argv=None):
              '(CI gating)')
     sp.add_argument('paths', nargs='*', default=None,
                     help='preset files or directories '
-                         '(default: presets/ under ci/env)')
+                         '(default: presets/ under env)')
     sp.set_defaults(fn=cmd_check)
 
     spq = sub.add_parser(
@@ -847,7 +864,7 @@ def main(argv=None):
     qrun = qsub.add_parser(
         'run', help='run a queue on pre-allocated runners '
                     '(ssh + podman + systemd)')
-    qrun.add_argument('queue_file', help='queue YAML (ci/queues/*.yaml)')
+    qrun.add_argument('queue_file', help='queue YAML (queues/*.yaml)')
     qrun.add_argument('--runner', action='append', required=True,
                       metavar='RUNNER',
                       help='runner (repeatable; jobs dequeued in queue '
@@ -874,7 +891,7 @@ def main(argv=None):
     qrun.add_argument('--outdir', default=None,
                       help='local artifacts dir (default ./<queue>.queue)')
     qrun.add_argument('--remote-ci', default='~/freeipa-ci/ci',
-                      help='ci/ tree location on each runner; ~ expands '
+                      help='ci-freeipa tree location on each runner; ~ expands '
                            'to the runner user\'s home (default '
                            '~/freeipa-ci/ci)')
     qrun.add_argument('--jobs-dir', default='~/jobs',
@@ -883,12 +900,12 @@ def main(argv=None):
                            '~/jobs)')
     qrun.add_argument('--ssh-key', default=None, help='ssh identity file')
     qrun.add_argument('--no-bootstrap', action='store_true',
-                      help='do not sync the ci/ tree to the runners '
+                      help='do not sync the ci-freeipa tree to the runners '
                            '(the testing-farm runner always clones the '
                            'repo itself)')
     qrun.add_argument('--srpm', default=None, metavar='PATH',
                       help='SRPM (or its dist/srpms/ dir) produced by '
-                           'ci/scripts/make-srpms.sh; shipped to each runner '
+                           'scripts/make-srpms.sh; shipped to each runner '
                            'and used to build the queue channel images that '
                            'are missing there (design §3.10, "build the '
                            'IPA RPMs ourselves"). With the testing-farm '
@@ -923,25 +940,32 @@ def main(argv=None):
                       help='per-channel-image remote build timeout in '
                            'seconds (default 9000 = 2.5h)')
     # Testing Farm options (only used with --runner testing-farm)
+    qrun.add_argument('--freeipa-src', default=None, metavar='DIR',
+                      help='FreeIPA checkout under test; --tf-repo-url and '
+                           '--tf-ref default to its origin remote and '
+                           'branch (this ci-freeipa checkout is never the '
+                           'repo under test)')
     qrun.add_argument('--tf-token', default=None,
                       help='Testing Farm API token (default: env '
                            'TESTING_FARM_API_TOKEN)')
     qrun.add_argument('--tf-url', default='https://api.testing-farm.io',
                       help='Testing Farm API base URL')
     qrun.add_argument('--tf-repo-url', default=None,
-                      help='git URL of this repo for the TF guest to clone '
-                           '(default: the origin remote of this checkout)')
+                      help='git URL of the FreeIPA repo under test for the '
+                           'TF guest to clone (default: the origin remote '
+                           'of --freeipa-src)')
     qrun.add_argument('--tf-ref', default=None,
                       help='git ref for the TF guest (default: the current '
-                           'branch name, falling back to the HEAD commit '
-                           'on a detached HEAD)')
+                           'branch of --freeipa-src, falling back to its '
+                           'HEAD SHA on a detached HEAD)')
     qrun.add_argument('--tf-arch', default='x86_64',
                       help='TF guest architecture (default x86_64)')
     qrun.add_argument('--tf-compose', default='Fedora-44',
                       help='TF guest OS compose (default Fedora-44)')
     qrun.add_argument('--tf-plan', default='/ci/tmt/plans/freeipa-env',
-                      help='tmt plan (node) name under the repo root '
-                           '(default /ci/tmt/plans/freeipa-env)')
+                      help='tmt plan (node) name in the FreeIPA repo under '
+                           'test; it pins this repo (default '
+                           '/ci/tmt/plans/freeipa-env)')
     qrun.add_argument('--tf-variable', action='append', default=[],
                       metavar='KEY=VALUE',
                       help='extra environment variable for the TF guest '

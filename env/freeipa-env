@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """freeipa-env — environment provisioner for FreeIPA CI.
 
-See ci/env/README.md and doc/designs/ci_modernization.md.
+See README.md in this repository; the design document lives in the
+freeipa repository as doc/designs/ci_modernization.md.
 """
 import os
 import sys

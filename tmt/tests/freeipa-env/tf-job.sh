@@ -9,9 +9,9 @@
 #
 # Env contract (set by the driver):
 #   JOBKEY          the queue job key (dir name; also the preset fallback)
-#   ENFPRESET       the preset, relative to ci/env (e.g. netgroup/azure/enf)
+#   ENFPRESET       the preset, relative to env (e.g. netgroup/azure/enf)
 #   JOB_WORKDIR     this job's workdir (already ~-expanded by the driver)
-#   CI, CLI         paths to the ci/ tree and the freeipa-env CLI
+#   CI, CLI         paths to the ci-freeipa tree root and the freeipa-env CLI
 #   TMT_TEST_DATA   the tmt test data dir (the driver's STAGEDATA); this
 #                   child stages into $TMT_TEST_DATA/$JOBKEY/
 #

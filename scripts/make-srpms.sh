@@ -2,14 +2,16 @@
 # make-srpms.sh (L1) — produce the freeipa source RPM from a git checkout.
 #
 # Runs on the machine that owns the freeipa source tree (the control node of
-# a CI deployment). Mirrors makerpms.sh's autogen+configure recipe but runs
+# a CI deployment) — this ci-freeipa repo only ships the helper; it operates
+# on a freeipa checkout given as the first argument (default: the current
+# directory). Mirrors makerpms.sh's autogen+configure recipe but runs
 # `make srpms` instead of `make rpms`: it packages the current git snapshot
 # into dist/srpms/freeipa-<version>.src.rpm, which the CI build lane
-# (ci/images/build.sh --srpm) compiles into binary RPMs inside the
+# (images/build.sh --srpm) compiles into binary RPMs inside the
 # freeipa-ci/build image on the runner.
 #
 # Usage:
-#   ci/scripts/make-srpms.sh [configure-args...]
+#   scripts/make-srpms.sh [freeipa-src-dir] [configure-args...]
 #
 # The control machine needs the autotools + rpm (for `rpmbuild -bs`) and the
 # distro dev packages the spec references at %prep/%build time are NOT needed
@@ -17,8 +19,12 @@
 # are satisfied later, inside the build container on the runner.
 set -euo pipefail
 
-# This script lives in ci/scripts/; two levels up is the repo root.
-pushd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# First argument: a freeipa source checkout (only when it is a directory);
+# otherwise the current directory is used and every argument is a configure
+# argument.
+SRC="$PWD"
+if [ -d "${1:-}" ]; then SRC="$1"; shift; fi
+pushd "$SRC"
 
 git submodule update --init --recursive
 

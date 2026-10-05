@@ -1,17 +1,18 @@
 """Queue supervisor: run an ordered preset queue on runners.
 
 A *runner* is a host that can execute jobs (``podman`` + systemd plus a
-copy of the repo's ``ci/`` tree). Three transports (runner.py):
+copy of this ci-freeipa tree). Three transports (runner.py):
 ``user@host[:port]`` (ssh, pre-allocated), ``local`` (the control node),
 and ``testing-farm`` (one TF API request per job; the guest runs the
 testing-farm: a runner's whole job subsequence becomes ONE TF request,
 the guest builds the SRPM + channel images once and runs every preset
-in the batch through the tmt plan in ``ci/tmt``).
+in the batch through the pinned ``freeipa-env`` plan in the FreeIPA repo,
+which discovers this repo's test at the pinned ref).
 
 The supervisor:
 
   1. checks every runner (reachability + podman / API token),
-  2. syncs the local ``ci/`` tree to ``--remote-ci`` (default
+  2. syncs the local ci-freeipa tree to ``--remote-ci`` (default
      ``~/freeipa-ci/ci``, expanded per user; Testing Farm clones the
      repo itself),
   3. when ``--srpm`` is given, ships it to each host runner and builds
@@ -70,7 +71,7 @@ class Supervisor:
         self.jobs_dir = jobs_dir
         self.bootstrap = bootstrap
         # build-our-own-RPMs lane (design §3.10): an SRPM produced on the
-        # control node (ci/scripts/make-srpms.sh) is shipped to each host
+        # control node (scripts/make-srpms.sh) is shipped to each host
         # runner and used to build the queue's channel images there before
         # any job starts; for the TF runner it is recorded as an HTTP(S)
         # URL the guest downloads.
@@ -228,7 +229,7 @@ class Supervisor:
                 raise SupervisorError(
                     f'runner {r.spec}: cannot resolve images for '
                     f'{which}: {(err[-1] if err else "").strip()}\n'
-                    f'(build the image there first: ci/images/build.sh, '
+                    f'(build the image there first: images/build.sh, '
                     f'or `podman load` a saved tarball)')
             self._resolved[r.spec] = self._parse_resolve(out)
             for ref, (concrete, img_id) in self._resolved[r.spec].items():

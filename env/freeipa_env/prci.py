@@ -43,7 +43,7 @@ from .image import channel_from_prefix
 # PRCI AD topology tokens -> (config role, placeholder FQDN, placeholder IP).
 # The FQDNs are placeholders: the real AD forest's zones are unknown here
 # and must be edited per environment. Addresses are in the RFC 5737
-# documentation range, like ci/env/presets/external-smoke.yaml.
+# documentation range, like env/presets/external-smoke.yaml.
 _AD_TOKENS = {
     'adroot': ('ad', 'ad1.ad.test', '192.0.2.101'),
     'adchild': ('ad_subdomain', 'ad1.adchild.ad.test', '192.0.2.102'),

@@ -14,7 +14,7 @@
 # in the test image (the original "samba 4.24.5 -> 4.24.6" incident) simply
 # cannot happen, because build and test share one repo snapshot per build.
 #
-# The image is built by ci/images/build.sh (alongside base/full). It is only
+# The image is built by images/build.sh (alongside base/full). It is only
 # needed by the SRPM build path (`build.sh --srpm`); the delivered-RPM path
 # (`build.sh --rpms`) never uses it.
 

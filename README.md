@@ -1,8 +1,40 @@
-# freeipa-env — CI environment provisioner
+# ci-freeipa — FreeIPA CI tooling, separate from the branch under test
 
-`freeipa-env` spawns (or attaches to) FreeIPA test environments from a single
-declarative file and drives the install → test → uninstall workflow. See
-`doc/designs/ci_modernization.md` for the design.
+This repository holds the FreeIPA CI implementation: the `freeipa-env`
+provisioner (spawns or attaches FreeIPA test environments from a single
+declarative file and drives the install → test → uninstall workflow), the
+image pipeline, the preset/queue catalogs and the tmt test that runs a job
+batch on a Testing Farm guest. The freeipa source tree no longer carries
+any of this code — it keeps only a pinned tmt plan that runs this repo's
+test against the checkout under test (see **Repository split** below). The
+design is documented in the freeipa repository as
+`doc/designs/ci_modernization.md`.
+
+## Repository split
+
+CI code and the branch under test are versioned independently. The only CI
+artifact inside a freeipa checkout is the pin — the plan
+`ci/tmt/plans/freeipa-env.fmf`, which discovers the test in this repo
+(`tmt/tests/freeipa-env/`) from a git URL at a pinned ref, and whose
+`prepare` step installs the BuildRequires of **that branch's**
+`freeipa.spec.in` (build dependencies belong to the code being built).
+Adopting newer CI tooling is therefore a one-line `ref:` bump in the plan;
+changing a branch's build deps never requires touching this repo.
+
+Running the test from a freeipa checkout (the plan's `discover.url` must be
+a git URL reachable where tmt runs — a local path works for local runs):
+
+```
+tmt run plan --name /ci/tmt/plans/freeipa-env -e FREEIPA_SRC=$PWD
+```
+
+`FREEIPA_SRC` points the test at this checkout for the on-guest SRPM build;
+the Testing Farm transport sets `FREEIPA_REPO_URL`/`FREEIPA_REPO_REF`
+instead (the guest clones the branch under test itself, since TF syncs the
+fmf tree as a plain file copy without `.git` or submodules). Submitting a
+TF batch from here: `freeipa-env queue run QUEUE --runner testing-farm
+--freeipa-src ~/freeipa` — the repo under test defaults to that checkout's
+origin and branch.
 
 ```
 freeipa-env up   ENV.YAML    create (or attach) the environment
@@ -93,7 +125,7 @@ run: {mode: integration, tests: [test_integration/test_simple_replication.py]}
   (`server create`/`show`/`delete`, floating IPs); the template for any
   other cloud.
 
-**Lifecycle.** `up`: provision → wait for ssh → rsync the `ci/` tree + the
+**Lifecycle.** `up`: provision → wait for ssh → rsync the ci-freeipa tree + the
 inner spec to the VM → run the inner `freeipa-env up` there → save the VM
 handles to `<workdir>/nested-state.json` (so a later `down` knows what to
 tear down). `down`: run the inner `freeipa-env down` (collects logs), rsync
@@ -278,7 +310,7 @@ collection works; Windows-only DCs need `user` adjusted.
 
 Queues run ordered preset lists on a pool of **pre-allocated runners**
 (hosts with ssh + podman + systemd, e.g. the lab VMs) — the replacement
-for PRCI's per-PR job scheduling. Queue files live in `ci/queues/`:
+for PRCI's per-PR job scheduling. Queue files live in `queues/`:
 
 * `azure.yaml` — the 16 Azure CI jobs (Azure ran them in parallel; the
   queue order is conventional);
@@ -288,7 +320,7 @@ for PRCI's per-PR job scheduling. Queue files live in `ci/queues/`:
   (regenerate after PRCI definition changes).
 
 Queue format: an ordered `jobs:` list of preset paths (relative to
-`ci/env/`), a directory entry (trailing `/`) expanding to all presets in
+`env/`), a directory entry (trailing `/`) expanding to all presets in
 it sorted, or per-job dicts (`preset`/`dir` + `note`).
 
 **Image references are build channels, never builds.** A preset pins
@@ -296,7 +328,7 @@ no build — it names a *channel*: `image: freeipa-current` (the current
 release's newest build), `freeipa-next` (the next release, PRCI
 `fedora-rawhide`) or `freeipa-previous` (the previous release). This
 mirrors PRCI, where each definition file references one build generation
-and every job in it uses that one build. `ci/images/build.sh --channel
+and every job in it uses that one build. `images/build.sh --channel
 NAME` tags each build with the channel tag (`freeipa-ci/full:<channel>`)
 alongside the immutable provenance tag (`freeipa-ci/full:<dist>-<sha>`).
 
@@ -309,7 +341,7 @@ external hosts run their own IPA. A preset may also name an explicit
 image reference (passed through unchanged) if you need to pin a build.
 
 ```
-freeipa-env queue run ci/queues/gating.yaml \
+freeipa-env queue run queues/gating.yaml \
     --runner root@192.168.122.215 --runner root@192.168.122.216 \
     [--jobs NAME ...] [--limit N] [--dry-run] [--keep-on-failure] \
     [--job-timeout SECS] [--outdir DIR] [--no-bootstrap] [--ssh-key FILE]
@@ -318,7 +350,7 @@ freeipa-env queue run ci/queues/gating.yaml \
 The supervisor, per run:
 
 1. validates every preset (parse + existence),
-2. checks each runner (ssh + podman) and rsyncs the local `ci/` tree to
+2. checks each runner (ssh + podman) and rsyncs the local ci-freeipa tree to
    `--remote-ci` (default `/root/freeipa-ci/ci`),
 3. asks each runner's provider to resolve every distinct preset's image
    references (remote `freeipa-env resolve`; fail fast on a missing
@@ -340,11 +372,11 @@ on the runner for `freeipa-env logs --refresh`-style triage (remember to
 ## Runner transports (`--runner`)
 
 A *runner* is a host that can execute a queued job (podman + systemd + a
-copy of the repo's `ci/` tree). Each `--runner SPEC` names one transport:
+copy of the ci-freeipa tree). Each `--runner SPEC` names one transport:
 
 | spec | transport | how jobs run |
 |---|---|---|
-| `user@host[:port]` (default) | **ssh** | a pre-allocated runner reached over key-based ssh; the `ci/` tree is rsynced there and `up`/`run`/`down` execute remotely |
+| `user@host[:port]` (default) | **ssh** | a pre-allocated runner reached over key-based ssh; the ci-freeipa tree is rsynced there and `up`/`run`/`down` execute remotely |
 | `local` | **local** | the control node is the runner; no ssh, the same job flow runs as local subprocesses (needs `podman` on the control node) |
 | `testing-farm` | **TF** | no ssh, no pre-allocated host: a runner's queued jobs run as **one Testing Farm** request whose guest provisions once, builds the SRPM + channel images once, and runs the presets in sequence |
 
@@ -363,33 +395,34 @@ any user). The local runner expands `~/...` against the local user's home.
 `--runner testing-farm` sends each runner's queued jobs to the public
 [Testing Farm](https://docs.testing-farm.io/) API as **one request** (one
 request per runner subsequence). There is no pre-allocated host and no root
-on any machine you control: TF provisions a fresh Fedora guest, checks out the
-repo **itself**, and runs the tmt plan in `ci/tmt` on it. The guest builds the
-SRPM and every needed channel image **once**, then runs the presets in
+on any machine you control: TF provisions a fresh Fedora guest, checks out
+the **FreeIPA repo under test** itself, and runs the pinned plan from that
+checkout — the plan discovers this repo's test at the pinned ref. The guest
+builds the SRPM and every needed channel image **once**, then runs the presets in
 sequence, reusing the baked images. A preset **PASSes** only when the request
 completes and that preset's own `results.yaml` grades `passed`; the request
 itself fails if any preset's run step fails.
 
 Required: an API token — pass `--tf-token TOKEN` or set the
 `TESTING_FARM_API_TOKEN` environment variable. The repo the guest clones is
-`--tf-repo-url` (default: the checkout's `remote.origin.url`) at
-`--tf-ref` (default: the checkout's `HEAD`); both should point at a
+`--tf-repo-url` (default: the `remote.origin.url` of `--freeipa-src`) at
+`--tf-ref` (default: the current branch of `--freeipa-src`); both should point at a
 **publicly pushed** commit, since TF clones over the network. Other knobs:
 `--tf-url` (API base), `--tf-arch` (default `x86_64`), `--tf-compose`
-(default `Fedora-44`), `--tf-plan` (tmt plan, default
+(default `Fedora-44`), `--tf-plan` (the plan node in the FreeIPA repo, default
 `/ci/tmt/plans/freeipa-env`), and `--tf-variable KEY=VALUE` (repeatable, extra
 variables for the request).
 
 **The guest builds the SRPM itself — no pre-supplied SRPM.** The tmt plan's
 `prepare` step (`how: install`) places `git`, `podman`, the autotools
-toolchain and every `BuildRequires` of `freeipa.spec.in` on the guest (the
+toolchain and every `BuildRequires` of the branch's `freeipa.spec.in` on the guest (the
 [synta](https://pagure.io/synta) pattern). TF's pipeline only syncs the fmf
 tree to the guest as a plain file copy (no `.git`, no submodule contents),
-so the tmt test clones the repo itself first — `git clone --recursive` +
+so the tmt test clones the repo under test itself first — `git clone --recursive` +
 `git checkout` of `--tf-repo-url`/`--tf-ref` — then produces `freeipa`'s
 SRPM on the guest: `autoreconf -i`, `./configure` with the spec's
 rpm-equivalent flags, and `make srpms`. It bakes each of the presets'
-channel images from that SRPM with `ci/images/build.sh --srpm` **once each**
+channel images from that SRPM with `images/build.sh --srpm` **once each**
 (a channel already baked is reused), then runs every preset in sequence —
 each a fresh `freeipa-env up` → `run` → `down` under its own `--job-timeout`
 — and the request fails if any run step fails. Pass `--srpm <URL>` only to
@@ -439,7 +472,7 @@ Fetching a finished request needs no token: both the request state
 only needed to *submit* a request via `queue run --runner testing-farm`.)
 
 ```
-freeipa-env queue run ci/queues/gating.yaml \
+freeipa-env queue run queues/gating.yaml \
     --runner testing-farm \
     --tf-token $TESTING_FARM_API_TOKEN \
     --tf-repo-url https://github.com/abbra/freeipa.git \
@@ -469,14 +502,14 @@ share one distro repo snapshot (design §3.10).
 
 The lane, end to end:
 
-1. **Control node** — `ci/scripts/make-srpms.sh` autogens + configures the
+1. **Control node** — `scripts/make-srpms.sh` autogens + configures the
    checkout and runs `make srpms`, producing
    `dist/srpms/freeipa-<ver>.src.rpm`. This is the only step that needs the
    IPA source tree; it mirrors `makerpms.sh` (same configure triplet), so
    the SRPM records the same host/layout a local `make rpms` would.
 2. **Ship** — the SRPM reaches the host that runs the environment: locally
    (single machine) or rsynced by the supervisor to each runner (queues).
-3. **Build + bake** — `ci/images/build.sh --srpm <path>` compiles the SRPM
+3. **Build + bake** — `images/build.sh --srpm <path>` compiles the SRPM
    inside the dedicated `freeipa-ci/build:<dist>` image (the base image plus
    every `BuildRequires` from the spec, baked once per dist — not `dnf
    builddep` per build) with `rpmbuild --nocheck --rebuild` (`--nocheck`
@@ -511,7 +544,7 @@ Three entry points, one underlying command:
   runner is missing, before any job starts:
 
   ```
-  freeipa-env queue run ci/queues/gating.yaml \
+  freeipa-env queue run queues/gating.yaml \
       --runner root@192.168.122.215 \
       --srpm dist/srpms \
       [--srpm-dir /root/freeipa-ci/srpm] [--image-timeout 9000]
@@ -530,7 +563,7 @@ images, no build), and an env file without a `build:` block is unaffected by
 `freeipa-env check [PRESETS ...]` validates preset files **without**
 spawning containers or touching the network — the CI gate for the 1300+
 presets (migrated PRCI, Azure, nested). With no arguments it checks every
-`*.yaml` under `ci/env/presets/` (plus the top-level presets); pass explicit
+`*.yaml` under `env/presets/` (plus the top-level presets); pass explicit
 files or directories to narrow the scope. Each preset must parse as an
 `EnvSpec` and pass the provider's read-only sanity checks:
 
@@ -547,7 +580,7 @@ iff every preset is sound and no path is missing. Wire it into the PR gate
 so a preset edit can't silently break a queue:
 
 ```
-freeipa-env check   # from ci/env; checks all presets, exits non-zero on any problem
+freeipa-env check   # from the repo root; checks all presets, exits non-zero on any problem
 ```
 
 ## Notes
