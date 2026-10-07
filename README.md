@@ -488,6 +488,48 @@ the request. `--dry-run` with a `testing-farm` runner prints the exact batch
 request JSON that would be submitted (a token is still required, but nothing
 is actually sent).
 
+## Fedora dist-git lane (packaging PR CI)
+
+A Fedora dist-git repository carries the spec, the patches, and a `sources`
+file with the hashes of the upstream tarballs — no configure.ac — so its CI
+cannot use the upstream-tree SRPM build (autoreconf/configure/make srpms).
+With `FREEIPA_DISTGIT=1` in the plan's `environment` the tmt test instead
+builds the SRPM from the dist-git checkout the plan itself ships:
+`tmt/tests/freeipa-env/distgit-srpm.sh` takes the plan tree (`$TMT_TREE`,
+which Fedora CI syncs to the guest), fetches every `sources` entry from the
+Fedora lookaside, and runs `rpmbuild -bs`. The channel image is baked from
+that SRPM with `--builddep`: the build image tops up any BuildRequires the
+PR's spec adds beyond the baked list, so the gate builds the package exactly
+as Fedora's build system would. Overrides: `FREEIPA_DISTGIT_DIR` (tree path,
+default `$TMT_TREE`), `FREEIPA_DISTGIT_SPEC` (spec file name),
+`FREEIPA_DISTGIT_PKG` (lookaside package name, default the spec's `Name:`),
+`FREEIPA_LOOKASIDE_URL` (lookaside base).
+
+The dist-git-side plan is the same pin as the upstream one, with a smaller
+`prepare` (the binary build happens inside the build image, so the guest
+needs no BuildRequires):
+
+```yaml
+discover:
+  how: fmf
+  url: https://github.com/abbra/ci-freeipa.git
+  ref: <pinned tag>
+  test: "^/tmt/tests/"
+prepare:
+  how: install
+  package: [podman, curl, git, rpm-build]
+execute:
+  how: tmt
+environment:
+  FREEIPA_DISTGIT: "1"
+  FREEIPA_JOBS: '[{"key": "base-unit", "preset_rel": "presets/azure/base.yaml"},
+                  {"key": "base-xmlrpc", "preset_rel": "presets/base-xmlrpc.yaml"}]'
+```
+
+The selected suites are whatever `FREEIPA_JOBS` lists (presets from this
+repo); the images stay pinned to the dist the image pipeline bakes (see
+`images/build.sh --dist`).
+
 ## Build the IPA RPMs ourselves
 
 By default `freeipa-env` consumes IPA RPMs that some build farm produced and

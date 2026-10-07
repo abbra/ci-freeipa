@@ -15,6 +15,12 @@
 #                     inside the dedicated freeipa-ci/build image (base + all
 #                     BuildRequires), then bakes the full image from them.
 #                     Mutually exclusive with --rpms.
+#   --builddep        With --srpm: run `dnf -y builddep <srpm>` inside the
+#                     build image before rpmbuild, installing any
+#                     BuildRequires the baked image lacks. For building a
+#                     spec that is itself under test (a dist-git PR whose
+#                     BuildRequires may differ from the image's list); a
+#                     no-op when the image already covers the spec.
 #   --sha SHORT_SHA   Git SHA of the IPA build to select from --rpms
 #                     (matches the 'git<sha>' version fragment). Omit to
 #                     pick the newest per package.
@@ -81,6 +87,7 @@ EXCLUDES+=('*debugsource')
 PINS=
 COPR_REPOS=
 IPA_FROM_COPR=0
+BUILDEP=0
 # Every IPA subpackage (from freeipa.spec.in, minus the source-only
 # `freeipa` meta, which has no binary RPM in COPR): the full server
 # (incl. freeipa-server-dns, required by the --setup-dns install), the
@@ -106,6 +113,7 @@ while [[ $# -gt 0 ]]; do
         --pin) PINS="$2"; shift 2 ;;
         --copr) COPR_REPOS="${COPR_REPOS:+$COPR_REPOS }$2"; shift 2 ;;
         --ipa-from-copr) IPA_FROM_COPR=1; shift ;;
+        --builddep) BUILDEP=1; shift ;;
         --ipa-packages) IPA_PACKAGES="$2"; shift 2 ;;
         --tool) TOOL="$2"; shift 2 ;;
         --distarch) DISTARCH="$2"; shift 2 ;;
@@ -239,12 +247,21 @@ if [[ -n "$SRPM" ]]; then
     # _topdir and builds the binary RPMs from it. --nocheck skips the spec's
     # %check (the full `make check` unit-test suite) -- CI runs tests in its
     # own `run` lane, so the build lane must not pay for it on a small runner.
+    BUILD_CMD="rpmbuild --define '_topdir /root/rpmbuild' --nocheck --rebuild /root/build/$(basename "$SRPM_FILE")"
+    if [[ "$BUILDEP" == "1" ]]; then
+        # The build image carries the BuildRequires of the upstream spec,
+        # baked once. A spec under test (a dist-git PR) may add or rename
+        # some; builddep tops up the container from the distro repos so the
+        # package builds exactly as Fedora's build system would build it.
+        echo "==> --builddep: topping up BuildRequires in $BUILD_IMAGE"
+        BUILD_CMD="set -e; dnf -y builddep /root/build/$(basename "$SRPM_FILE"); $BUILD_CMD"
+    fi
     "$TOOL" run --rm \
         --entrypoint /bin/bash \
         -v "$SRPM_DIR":/root/build:z \
         -v "$TOPDIR":/root/rpmbuild:z \
         "$BUILD_IMAGE" \
-        -c "rpmbuild --define '_topdir /root/rpmbuild' --nocheck --rebuild /root/build/$(basename "$SRPM_FILE")"
+        -c "$BUILD_CMD"
 
     mkdir -p "$WORK/rpms"
     find "$TOPDIR/RPMS" -name '*.rpm' \

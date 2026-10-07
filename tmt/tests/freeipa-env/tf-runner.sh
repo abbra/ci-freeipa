@@ -18,8 +18,10 @@
 #   2. obtain the SRPM (download FREEIPA_SRPM_URL, or build it ON the guest:
 #      from a clone of FREEIPA_REPO_URL at FREEIPA_REPO_REF -- the TF case,
 #      where the fmf tree is only a plain file copy without .git/submodules
-#      -- or from the existing checkout named by FREEIPA_SRC -- the local
-#      tmt case). Needed only if a channel image is missing;
+#      -- from the dist-git checkout the plan ships (FREEIPA_DISTGIT; the
+#      Fedora dist-git CI case, see distgit-srpm.sh) -- or from the existing
+#      checkout named by FREEIPA_SRC -- the local tmt case). Needed only if
+#      a channel image is missing;
 #   3. build the union of the batch's channel images, each freshness-checked
 #      (a present freeipa-ci/full:<channel> is left untouched);
 #   4. run each preset's up -> run -> down recipe via tf-job.sh, which stages
@@ -101,6 +103,17 @@ REPO_REF="${FREEIPA_REPO_REF:-HEAD}"
 # given, so a guest never touches a tree it does not own.
 FREEIPA_SRC="${FREEIPA_SRC:-}"
 GLOBAL_CHANNEL="${FREEIPA_CHANNEL:-}"
+# FREEIPA_DISTGIT: build the SRPM from the dist-git checkout the plan ships
+# (the Fedora dist-git CI case: the plan tree IS the dist-git repo -- spec +
+# patches + `sources` hashes; the tarballs are fetched from the lookaside).
+# FREEIPA_DISTGIT_DIR overrides the tree path (default: $TMT_TREE, which tmt
+# exports to every test). The dist-git lane also passes --builddep to
+# images/build.sh: the spec under test may carry BuildRequires the baked
+# build image does not have, and the gate must build the package the way
+# Fedora's own build system would.
+DISTGIT="${FREEIPA_DISTGIT:-}"
+DISTGIT_DIR="${FREEIPA_DISTGIT_DIR:-}"
+DISTGIT_ARGS=()
 # Additional COPR repos to enable on the channel-image bakes (space-joined
 # OWNER/PROJECT list from the request's FREEIPA_COPR_REPOS variable). This
 # customizes channel *creation* on the guest without touching any preset.
@@ -240,6 +253,14 @@ if [ -n "$MISSING" ]; then
             echo "== downloading SRPM $SRPM_URL -> $SRPM_DIR/"
             curl -fsSL -o "$SRPM_DIR/freeipa.src.rpm" "$SRPM_URL" \
                 || die "failed to download SRPM from $SRPM_URL"
+        elif [ -n "$DISTGIT" ] || [ -n "$DISTGIT_DIR" ]; then
+            TREE="${DISTGIT_DIR:-$TMT_TREE}"
+            [ -n "$TREE" ] && [ -d "$TREE" ] || \
+                die "FREEIPA_DISTGIT needs the dist-git tree; TMT_TREE is unset or not a directory"
+            echo "== dist-git lane: building the SRPM from the plan tree $TREE"
+            DISTGIT_ARGS=(--builddep)
+            bash "$CI/tmt/tests/freeipa-env/distgit-srpm.sh" "$TREE" "$SRPM_DIR" \
+                || die "dist-git SRPM build failed"
         else
             echo "== full flow: no SRPM URL; building freeipa's SRPM from source"
             build_srpm_from_clone "$SRPM_DIR" || die "SRPM build on the guest failed"
@@ -252,6 +273,7 @@ if [ -n "$MISSING" ]; then
             # present channel images were skipped above (build once, reuse).
             bash "$CI/images/build.sh" --srpm "$SRPM_DIR" --channel "$c" \
                 --tool podman ${COPR_ARGS[@]+"${COPR_ARGS[@]}"} \
+                ${DISTGIT_ARGS[@]+"${DISTGIT_ARGS[@]}"} \
                 || die "channel image build failed for $c"
             podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1 \
                 || die "build succeeded but freeipa-ci/full:$c is still missing"
