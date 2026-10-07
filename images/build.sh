@@ -25,7 +25,10 @@
 #                     (matches the 'git<sha>' version fragment). Omit to
 #                     pick the newest per package.
 #   --dist N          Fedora dist tag, default 44 (image tags:
-#                     <tag>/full:<dist>-<sha> and <tag>/full:<dist>).
+#                     <tag>/full:<dist>-<sha> and <tag>/full:<dist>). The
+#                     base image is built from fedora-toolbox:<dist>;
+#                     `rawhide` is accepted (rolling toolbox tag) and is
+#                     what the dist-git lanes pass when the guest is rawhide.
 #   --channel NAME    Build channel to publish, default current. Tags the
 #                     built image as <tag>/full:<channel> (the abstract
 #                     channel presets reference via `image: freeipa-<channel>`).
@@ -149,7 +152,8 @@ SHA_TAG=""
 
 if [[ "${BASE:-0}" != "1" ]]; then
     echo "==> Building base image $BASE_IMAGE"
-    "$TOOL" build -f "$SCRIPT_DIR/base/Dockerfile" -t "$BASE_IMAGE" "$SCRIPT_DIR/base"
+    "$TOOL" build -f "$SCRIPT_DIR/base/Dockerfile" -t "$BASE_IMAGE" \
+        --build-arg "DIST=$DIST" "$SCRIPT_DIR/base"
 fi
 
 # --- select the IPA RPM set (newest per package, scoped to --sha) ----------

@@ -15,15 +15,17 @@
 #
 # Flow:
 #   1. parse FREEIPA_JOBS -> the list of (key, preset) jobs;
-#   2. obtain the SRPM (download FREEIPA_SRPM_URL, or build it ON the guest:
-#      from a clone of FREEIPA_REPO_URL at FREEIPA_REPO_REF -- the TF case,
-#      where the fmf tree is only a plain file copy without .git/submodules
-#      -- from the dist-git checkout the plan ships (FREEIPA_DISTGIT; the
-#      Fedora dist-git CI case, see distgit-srpm.sh) -- or from the existing
-#      checkout named by FREEIPA_SRC -- the local tmt case). Needed only if
-#      a channel image is missing;
-#   3. build the union of the batch's channel images, each freshness-checked
-#      (a present freeipa-ci/full:<channel> is left untouched);
+#   2. obtain the IPA packages (download FREEIPA_SRPM_URL; REUSE the Koji
+#      scratch build Packit already ran for a dist-git PR (KOJI_TASK_ID ->
+#      koji-rpms.py downloads its RPMs); build an SRPM ON the guest -- from
+#      a clone of FREEIPA_REPO_URL at FREEIPA_REPO_REF (the TF case, where
+#      the fmf tree is only a plain file copy without .git/submodules), from
+#      the dist-git checkout the plan ships (FREEIPA_DISTGIT, see
+#      distgit-srpm.sh), or from the checkout named by FREEIPA_SRC (local
+#      tmt runs)). Needed only if a channel image is missing;
+#   3. build the union of the batch's channel images from those RPMs/SRPMs,
+#      each freshness-checked (a present freeipa-ci/full:<channel> is left
+#      untouched);
 #   4. run each preset's up -> run -> down recipe via tf-job.sh, which stages
 #      its own per-preset results.yaml + artifacts under the test data dir;
 #   5. reparent each preset's collected artifacts into artifacts/<key>/ so the
@@ -113,7 +115,6 @@ GLOBAL_CHANNEL="${FREEIPA_CHANNEL:-}"
 # Fedora's own build system would.
 DISTGIT="${FREEIPA_DISTGIT:-}"
 DISTGIT_DIR="${FREEIPA_DISTGIT_DIR:-}"
-DISTGIT_ARGS=()
 # Additional COPR repos to enable on the channel-image bakes (space-joined
 # OWNER/PROJECT list from the request's FREEIPA_COPR_REPOS variable). This
 # customizes channel *creation* on the guest without touching any preset.
@@ -131,6 +132,25 @@ for _r in $COPR_REPOS; do COPR_ARGS+=(--copr "$_r"); done
 IPA_FROM_COPR="${FREEIPA_IPA_FROM_COPR:-}"
 IPA_PACKAGES="${FREEIPA_IPA_PACKAGES:-}"
 [ -n "$IPA_FROM_COPR" ] && echo "== IPA-from-COPR mode: $COPR_REPOS${IPA_PACKAGES:+ ($IPA_PACKAGES)}"
+# KOJI_TASK_ID: set by Packit on Fedora dist-git CI test requests -- the
+# task id of the Koji scratch build Packit already ran for this PR. When it
+# is present the batch REUSES that build: koji-rpms.py downloads the task's
+# binary RPMs and the channel images are baked from them (build.sh --rpms)
+# with no SRPM and no build image -- instead of paying for a second build.
+KOJI_TASK="${KOJI_TASK_ID:-}"
+[ -n "$KOJI_TASK" ] && echo "== scratch-build reuse: koji task $KOJI_TASK"
+# The dist of the guest == the dist the dist-git PR targets (Packit picks
+# the compose per dist-git branch). The koji lane's RPMs were built for
+# exactly that dist and the dist-git lane's SRPM carries its %{dist}, so
+# those lanes bake the base/channel images for the same dist; rawhide has
+# no numeric toolbox tag yet, so it uses the rolling one.
+guest_dist() {
+    if grep -qi rawhide /etc/fedora-release /etc/os-release 2>/dev/null; then
+        echo rawhide
+        return
+    fi
+    rpm -E '%{dist}' 2>/dev/null | sed 's/^\.fc//'
+}
 BATCH_HOME="$HOME/freeipa-jobs"
 SRPM_DIR="$BATCH_HOME/batch-srpm"
 
@@ -223,11 +243,13 @@ build_srpm_from_clone() {
     cd "$CI" || die "cannot cd back to $CI"
 }
 
-# --- ensure the SRPM (or the COPR IPA) + every missing channel image --------
-# In the SRPM lane the SRPM is only needed when at least one channel image is
-# absent (a batch whose images are all pre-baked skips both the SRPM build and
-# the bake). In IPA-from-COPR mode there is no SRPM at all: the channel images
-# are baked with the IPA installed from the enabled COPR repos.
+# --- ensure the IPA RPMs + every missing channel image ----------------------
+# The IPA packages reach the channel image through one of four lanes, in this
+# order: IPA-from-COPR (explicit), a pre-supplied SRPM URL, the dist-git
+# scratch-build reuse (KOJI_TASK_ID: download the RPMs Packit already built),
+# the dist-git tree SRPM build, or the upstream source build. The SRPM lanes
+# only need the SRPM when at least one channel image is absent (a batch whose
+# images are all pre-baked skips both the SRPM build and the bake).
 MISSING=""
 for c in $CHANNELS; do
     if ! podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1; then
@@ -248,32 +270,49 @@ if [ -n "$MISSING" ]; then
                 || die "build succeeded but freeipa-ci/full:$c is still missing"
         done
     else
-        mkdir -p "$SRPM_DIR"
+        BUILD_SRC=()     # --srpm <dir> or --rpms <dir>
+        BUILD_EXTRA=()   # lane-specific: --builddep, --dist
         if [ -n "$SRPM_URL" ]; then
+            mkdir -p "$SRPM_DIR"
             echo "== downloading SRPM $SRPM_URL -> $SRPM_DIR/"
             curl -fsSL -o "$SRPM_DIR/freeipa.src.rpm" "$SRPM_URL" \
                 || die "failed to download SRPM from $SRPM_URL"
+            BUILD_SRC=(--srpm "$SRPM_DIR")
+        elif [ -n "$KOJI_TASK" ]; then
+            # Scratch-build reuse: Packit's Koji build for this PR already
+            # produced the RPMs; fetch them and bake the image from them --
+            # no SRPM, no build image, no rpmbuild. The RPMs were built for
+            # the guest's dist, so the images are baked for that dist too.
+            RPMS_DIR="$BATCH_HOME/koji-rpms"
+            echo "== reusing scratch build: fetching RPMs of koji task $KOJI_TASK -> $RPMS_DIR/"
+            python3 "$CI/tmt/tests/freeipa-env/koji-rpms.py" "$KOJI_TASK" "$RPMS_DIR" \
+                || die "koji scratch-build RPM fetch failed"
+            BUILD_SRC=(--rpms "$RPMS_DIR")
+            BUILD_EXTRA+=(--dist "$(guest_dist)")
         elif [ -n "$DISTGIT" ] || [ -n "$DISTGIT_DIR" ]; then
+            mkdir -p "$SRPM_DIR"
             TREE="${DISTGIT_DIR:-$TMT_TREE}"
             [ -n "$TREE" ] && [ -d "$TREE" ] || \
                 die "FREEIPA_DISTGIT needs the dist-git tree; TMT_TREE is unset or not a directory"
             echo "== dist-git lane: building the SRPM from the plan tree $TREE"
-            DISTGIT_ARGS=(--builddep)
             bash "$CI/tmt/tests/freeipa-env/distgit-srpm.sh" "$TREE" "$SRPM_DIR" \
                 || die "dist-git SRPM build failed"
+            BUILD_SRC=(--srpm "$SRPM_DIR")
+            BUILD_EXTRA+=(--builddep --dist "$(guest_dist)")
         else
+            mkdir -p "$SRPM_DIR"
             echo "== full flow: no SRPM URL; building freeipa's SRPM from source"
             build_srpm_from_clone "$SRPM_DIR" || die "SRPM build on the guest failed"
+            BUILD_SRC=(--srpm "$SRPM_DIR")
         fi
-        ls -l "$SRPM_DIR"
         for c in $MISSING; do
-            echo "== building channel $c image from SRPM"
-            # build.sh builds the base + build images itself when absent, so
-            # this one call covers both the SRPM-URL and the full-flow paths;
-            # present channel images were skipped above (build once, reuse).
-            bash "$CI/images/build.sh" --srpm "$SRPM_DIR" --channel "$c" \
+            echo "== building channel $c image"
+            # build.sh builds the base (+ build, in the SRPM lanes) images
+            # itself when absent, so this one call covers every lane; present
+            # channel images were skipped above (build once, reuse).
+            bash "$CI/images/build.sh" "${BUILD_SRC[@]}" --channel "$c" \
                 --tool podman ${COPR_ARGS[@]+"${COPR_ARGS[@]}"} \
-                ${DISTGIT_ARGS[@]+"${DISTGIT_ARGS[@]}"} \
+                ${BUILD_EXTRA[@]+"${BUILD_EXTRA[@]}"} \
                 || die "channel image build failed for $c"
             podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1 \
                 || die "build succeeded but freeipa-ci/full:$c is still missing"

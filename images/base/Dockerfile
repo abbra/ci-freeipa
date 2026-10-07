@@ -14,7 +14,11 @@
 #   * sshd with root key login: the multihost transport (pytest framework)
 #     connects to every host as root.
 
-FROM registry.fedoraproject.org/fedora-toolbox:44
+# The dist follows the caller (images/build.sh --dist N passes it here; the
+# dist-git lanes pass the guest's dist so RPMs built for that dist resolve).
+# `rawhide` is a valid tag (the rolling toolbox image).
+ARG DIST=44
+FROM registry.fedoraproject.org/fedora-toolbox:${DIST}
 
 # Container contract: systemd init, sshd, firewall tooling (installed,
 # masked), DNS/NS utilities, build tools the test suites expect on a

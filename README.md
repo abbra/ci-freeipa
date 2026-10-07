@@ -490,20 +490,30 @@ is actually sent).
 
 ## Fedora dist-git lane (packaging PR CI)
 
-A Fedora dist-git repository carries the spec, the patches, and a `sources`
-file with the hashes of the upstream tarballs — no configure.ac — so its CI
-cannot use the upstream-tree SRPM build (autoreconf/configure/make srpms).
-With `FREEIPA_DISTGIT=1` in the plan's `environment` the tmt test instead
-builds the SRPM from the dist-git checkout the plan itself ships:
+Fedora dist-git CI (Packit) runs a **Koji scratch build** for every dist-git
+PR before it runs the tests, and passes its task id to the test request as
+`KOJI_TASK_ID`. The test REUSES that build: `tmt/tests/freeipa-env/
+koji-rpms.py` reads the task's `buildArch` subtask results and downloads
+the binary RPMs (x86_64 + noarch, debuginfo/debugsource excluded) from
+kojipkgs; the channel image is baked from them with `build.sh --rpms` --
+no SRPM, no build image, no rpmbuild. The scratch build is for the PR's
+target dist, so this lane bakes the base/channel images for the guest's
+dist (`images/build.sh --dist`, `base/Dockerfile` takes `ARG DIST`;
+rawhide guests map to the rolling `rawhide` toolbox tag).
+
+Fallback when no scratch build was made (manual runs, a CI without Packit):
+with `FREEIPA_DISTGIT=1` the test builds the SRPM from the dist-git
+checkout the plan itself ships -- a dist-git repo carries the spec, the
+patches, and a `sources` file with the tarball hashes, no configure.ac.
 `tmt/tests/freeipa-env/distgit-srpm.sh` takes the plan tree (`$TMT_TREE`,
-which Fedora CI syncs to the guest), fetches every `sources` entry from the
-Fedora lookaside, and runs `rpmbuild -bs`. The channel image is baked from
-that SRPM with `--builddep`: the build image tops up any BuildRequires the
-PR's spec adds beyond the baked list, so the gate builds the package exactly
-as Fedora's build system would. Overrides: `FREEIPA_DISTGIT_DIR` (tree path,
-default `$TMT_TREE`), `FREEIPA_DISTGIT_SPEC` (spec file name),
-`FREEIPA_DISTGIT_PKG` (lookaside package name, default the spec's `Name:`),
-`FREEIPA_LOOKASIDE_URL` (lookaside base).
+which the CI syncs to the guest), fetches every `sources` entry from the
+Fedora lookaside, and runs `rpmbuild -bs`; the channel image is then baked
+from that SRPM with `--builddep` (the build image tops up any BuildRequires
+the PR's spec adds beyond the baked list) and the guest's dist. Overrides:
+`FREEIPA_DISTGIT_DIR` (tree path, default `$TMT_TREE`),
+`FREEIPA_DISTGIT_SPEC` (spec file name), `FREEIPA_DISTGIT_PKG` (lookaside
+package name, default the spec's `Name:`), `FREEIPA_LOOKASIDE_URL`
+(lookaside base).
 
 The dist-git-side plan is the same pin as the upstream one, with a smaller
 `prepare` (the binary build happens inside the build image, so the guest
@@ -521,14 +531,15 @@ prepare:
 execute:
   how: tmt
 environment:
+  # fallback source when the request carries no KOJI_TASK_ID
   FREEIPA_DISTGIT: "1"
   FREEIPA_JOBS: '[{"key": "base-unit", "preset_rel": "presets/azure/base.yaml"},
                   {"key": "base-xmlrpc", "preset_rel": "presets/base-xmlrpc.yaml"}]'
 ```
 
 The selected suites are whatever `FREEIPA_JOBS` lists (presets from this
-repo); the images stay pinned to the dist the image pipeline bakes (see
-`images/build.sh --dist`).
+repo). Source precedence on the guest: `FREEIPA_SRPM_URL` > `KOJI_TASK_ID`
+(scratch-build reuse) > `FREEIPA_DISTGIT` > the upstream clone/SRPM build.
 
 ## Build the IPA RPMs ourselves
 

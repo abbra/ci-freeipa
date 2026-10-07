@@ -2,15 +2,20 @@ summary: Provision a FreeIPA env and run its job recipe
 description: |
     This test lives in the separate ci-freeipa repository; the plan in the
     FreeIPA repo under test discovers it from this repo at a pinned ref.
-    Runs on a Testing Farm guest (or locally). The plan's prepare step
-    installs the BuildRequires of freeipa.spec.in, so when no SRPM URL is
-    supplied the test builds freeipa's SRPM directly on the guest: from a
-    clone of FREEIPA_REPO_URL at FREEIPA_REPO_REF, or from the checkout
-    given in FREEIPA_SRC (local runs). It bakes the batch's channel images
-    from it ONCE, then runs every preset in the batch (FREEIPA_JOBS)
-    through the same freeipa-env up/run/down flow a local or ssh queue job
-    would, reusing the SRPM and channel images across presets. Exits with
-    the worst per-job run status.
+    Runs on a Testing Farm guest (or locally). When KOJI_TASK_ID is set
+    (Fedora dist-git CI: Packit already ran a Koji scratch build for the
+    PR) the test REUSES that build -- it downloads the task's RPMs and
+    bakes the channel images from them, with no SRPM and no build image.
+    Otherwise the plan's prepare step installs the BuildRequires of
+    freeipa.spec.in, so when no SRPM URL is supplied the test builds
+    freeipa's SRPM directly on the guest: from a clone of FREEIPA_REPO_URL
+    at FREEIPA_REPO_REF, from the dist-git tree the plan ships
+    (FREEIPA_DISTGIT), or from the checkout given in FREEIPA_SRC (local
+    runs). It bakes the batch's channel images ONCE, then runs every
+    preset in the batch (FREEIPA_JOBS) through the same freeipa-env
+    up/run/down flow a local or ssh queue job would, reusing the packages
+    and channel images across presets. Exits with the worst per-job run
+    status.
 test: bash ./tf-runner.sh
 duration: 12h
 result: custom
