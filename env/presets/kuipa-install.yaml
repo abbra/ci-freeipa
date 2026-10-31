@@ -25,8 +25,11 @@
 #   podman exec kuipa-install_master_1  ipa-server-install -U \
 #        --domain ipa.test --realm EXAMPLE.TEST -a Secret123 -p Secret123 \
 #        --setup-dns --forwarder 8.8.8.8 --setup-kra
+#   #    --principal alone is not enough for ipa-replica-install: the
+#   #    client-side configuration it runs first needs an OTP too, or it
+#   #    fails with 'One of password / principal / keytab is required'.
 #   podman exec kuipa-install_replica_1 ipa-replica-install -U \
-#        --principal admin --server master1.ipa.test \
+#        --principal admin --password Secret123 --server master1.ipa.test \
 #        --domain ipa.test --realm EXAMPLE.TEST --setup-ca
 #   # 4. what to look at per server: systemctl status kuipad.socket kuipad.service,
 #   #    /etc/ipa/kuipad.json, ls /var/lib/ipa/ku, GET https://<host>/ipa/ku/adv,
