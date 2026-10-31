@@ -1,0 +1,79 @@
+# kuipa-install — a master, a replica and a client, all installed with the
+# kuipa RPMs present, so the FreeIPA installer's kuipad steps are the thing
+# under test (ipaserver/install/kuipadinstance.py runs from both
+# ipa-server-install and ipa-replica-install).
+#
+# The image carries kuipa: freeipa.spec has no Requires on the client side
+# (freeipa-server's `Requires: kuipa-server` is satisfied by the *same*
+# COPR), and channel *creation* is where extra packages belong — `--copr`
+# enables the repo on the image bake, `--ipa-packages` names the specs to
+# install from it. The preset references the channel abstractly, so it stays
+# build-agnostic: bake the channel first, `up` resolves it.
+#
+# From the ci-freeipa root (dist 45 = this host; abbra/pqc publishes kuipa,
+# kuipa-server and the freeipa dev build for 44 and 45):
+#
+#   # 1. bake the channel image from the COPR builds (nothing built locally)
+#   bash images/build.sh --dist 45 --ipa-from-copr --copr abbra/pqc \
+#        --channel current --ipa-packages "<default IPA list> kuipa kuipa-server"
+#   # 2. create the three hosts
+#   env/freeipa-env up presets/kuipa-install.yaml
+#   # 3. install them in order. The installer's kuipad steps run inside these:
+#   #    containers, /etc/ipa/kuipad.json + /var/lib/ipa/ku, the ipa-ku/<host>
+#   #    keytab, kuipad's own realm keys (kuipad generate-keys), the units,
+#   #    then the httpd /ipa/ku/ proxy.
+#   podman exec kuipa-install_master_1  ipa-server-install -U \
+#        --domain ipa.test --realm EXAMPLE.TEST -a Secret123 -p Secret123 \
+#        --setup-dns --forwarder 8.8.8.8 --setup-kra
+#   podman exec kuipa-install_replica_1 ipa-replica-install -U \
+#        --principal admin --server master1.ipa.test \
+#        --domain ipa.test --realm EXAMPLE.TEST --setup-ca
+#   # 4. what to look at per server: systemctl status kuipad.socket kuipad.service,
+#   #    /etc/ipa/kuipad.json, ls /var/lib/ipa/ku, GET https://<host>/ipa/ku/adv,
+#   #    the anchor exchange in `journalctl -u kuipad`. A client joins with:
+#   #    --ip-address because the realm runs with --setup-dns: without a record
+#   #    to add, host-add refuses with "does not have corresponding DNS A/AAAA
+#   #    record". kuipad is not on PATH: it is /usr/libexec/kuipad.
+#   OTP=$(podman exec kuipa-install_master_1 ipa host-add client1.ipa.test \
+#        --ip-address 10.94.0.4 --random | sed -n 's/.*Random password: \(.*\)/\1/p')
+#   STR=$(podman exec kuipa-install_master_1 /usr/libexec/kuipad enrollment-string --days 1)
+#   # the string carries no secret of its own; ':<OTP>' is the host's one-time
+#   # password, and --ldap-otp because host-add --random only sets userpassword,
+#   # not the host's temporary Kerberos key (kuipa/docs/src/realm/enrollment.md)
+#   podman exec kuipa-install_client_1 sh -c "printf '%s:%s' '$STR' '$OTP' > /tmp/kuipa.string"
+#   podman exec kuipa-install_client_1 kuipa enroll --server master1.ipa.test \
+#        --enrollment-file /tmp/kuipa.string --hostname client1.ipa.test \
+#        --ldap-otp
+#   # 5. tear down (collects each host's journal + daemon logs)
+#   env/freeipa-env down presets/kuipa-install.yaml
+#
+# Re-bake after changing the freeipa tree: `freeipa-env ensure --build`
+# rebuilds the channel WITHOUT the COPR hook (no kuipa) — re-run step 1.
+# For a working tree (uncommitted files included), step 1 becomes
+# `bash scripts/make-srpms.sh ~/src/freeipa` then build.sh with
+# `--srpm ~/src/freeipa/dist/srpms --copr abbra/pqc --pin "kuipa kuipa-server"`.
+
+name: kuipa-install
+provider: podman
+domain: ipa.test
+dist: 45
+image: freeipa-current
+dns_forwarder: 8.8.8.8
+# 10.89.0.0/24 is already claimed by another project's podman network on
+# this host, and podman refuses a second network on the same subnet.
+subnet_v4: 10.94.0.0/24
+subnet_v6: 2001:db8:94::/64
+
+# The Azure-mirror default of 1800m OOM-killed the dogtag JVM during
+# ipa-server-install (unit exit 137, result 'oom-kill', right at the RA
+# certificate request), which the installer reports as a bare
+# RemoteDisconnected. dirsrv + pki-tomcatd + certmonger together need more
+# headroom while the CA is being instantiated.
+resources:
+  master: {memory: 3500m, memory-swap: 4500m}
+  replica: {memory: 3500m, memory-swap: 4500m}
+
+hosts:
+  - {role: master, name: master1}
+  - {role: replica, name: replica1}
+  - {role: client, name: client1}
