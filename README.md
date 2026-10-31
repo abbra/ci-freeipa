@@ -639,7 +639,9 @@ freeipa-env check   # from the repo root; checks all presets, exits non-zero on 
 ## Notes
 
 - The podman provider pins one network per env (10.89.0.0/24 +
-  2001:db8:1::/64); one env per host in v1.
+  2001:db8:1::/64); one env per host in v1. A preset replaces those with
+  `subnet_v4:` / `subnet_v6:` when the defaults collide with a podman
+  network another project already created on the same host.
 - `run` in base mode copies `scripts/run-base-tests.sh` into the master
   container and runs it there; the JUnit report is fetched back afterwards.
 - Uninstall is part of the workflow (install → test → uninstall); the

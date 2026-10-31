@@ -195,9 +195,9 @@ class PodmanProvider:
     # ------------------------------------------------------------- containers
     def _network_args(self):
         args = ['network', 'create']
-        args += ['--subnet', DEFAULT_V4_SUBNET]
+        args += ['--subnet', self.spec.subnet_v4 or DEFAULT_V4_SUBNET]
         if self.spec.ipv6:
-            args += ['--subnet', DEFAULT_V6_SUBNET]
+            args += ['--subnet', self.spec.subnet_v6 or DEFAULT_V6_SUBNET]
         args.append(self.spec.network_name())
         return args
 

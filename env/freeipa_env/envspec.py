@@ -102,6 +102,10 @@ class EnvSpec:
     fips: bool = False
     ipv6: bool = True
     dns_forwarder: Optional[str] = None
+    # podman network subnets; the defaults collide with other projects'
+    # podman networks on a shared host, so a preset may override them
+    subnet_v4: Optional[str] = None
+    subnet_v6: Optional[str] = None
     admin_name: str = 'admin'
     admin_password: str = 'Secret123'
     dirman_password: str = 'Secret123'
