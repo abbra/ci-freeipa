@@ -10,6 +10,9 @@ test against the checkout under test (see **Repository split** below). The
 design is documented in the freeipa repository as
 `doc/designs/ci_modernization.md`.
 
+For agent-assisted investigation and testing of a current FreeIPA worktree,
+see [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
+
 ## Repository split
 
 CI code and the branch under test are versioned independently. The only CI
