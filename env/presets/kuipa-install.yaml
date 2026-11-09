@@ -47,6 +47,24 @@
 #   podman exec kuipa-install_client_1 kuipa enroll --server master1.ipa.test \
 #        --enrollment-file /tmp/kuipa.string --hostname client1.ipa.test \
 #        --ldap-otp
+#   # 4b. sealed backup and total loss (kuipa docs/DESIGN-backup.md, freeipa
+#   #    doc/designs/kuipa-backup.md). Make the recovery key anywhere, back up,
+#   #    note the card, then wipe the master and restore from two papers:
+#   printf 'six honest words to open the papers' > /tmp/words
+#   podman exec -i kuipa-install_master_1 sh -c 'cat > /root/words' < /tmp/words
+#   podman exec kuipa-install_master_1 kuipa backup key create --realm EXAMPLE.TEST \
+#        --recovery-file /root/words -o /root/recipient.json | tee /tmp/papers.txt
+#   podman exec kuipa-install_master_1 ipa-backup --kuipa --kuipa-recipient /root/recipient.json
+#   podman exec kuipa-install_master_1 kuipa backup card > /tmp/card.txt   # realm + anchors
+#   #    expect ipa-full.tar.kuipa, its .kusig and header.kusig in the backup dir.
+#   #    Then ipa-server-install --uninstall (or a fresh container of the same
+#   #    name), and with the realm and an anchor from the card:
+#   podman exec -i kuipa-install_master_1 ipa-restore -U --kuipa-realm EXAMPLE.TEST \
+#        --kuipa-anchor <anchor from card> --kuipa-recovery-file /root/words \
+#        /var/lib/ipa/backup/ipa-full-<stamp> < two-papers.txt
+#   #    expect the same anchors (`kuipa backup card`) and client1 still verifying
+#   #    the server; a flipped byte in the .kuipa file or a missing .kusig must be
+#   #    refused before the papers are asked for.
 #   # 5. tear down (collects each host's journal + daemon logs)
 #   env/freeipa-env down presets/kuipa-install.yaml
 #
