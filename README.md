@@ -64,6 +64,7 @@ freeipa-env ensure ENV.YAML    build the env's missing channel images (Fedora's 
 freeipa-env migrate PRCI.YAML  generate presets from a PRCI definition
 freeipa-env queue run QUEUE.YAML --runner USER@HOST [...]   # run a queue
 freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          # PRCI-order queue
+freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]    # generated preset/queue
 freeipa-env check [PRESETS ...]                             # validate presets (no containers)
 ```
 
@@ -800,6 +801,28 @@ can take a while). Force a rebuild with `build.force` in the env file,
 SRPM (`--srpm`, or a `build:` block on the env file) a missing channel image
 is instead baked with dnf from the distribution's packages, or from the
 `--copr` repositories when any is given (see above).
+
+## Blend a preset or queue with a provider setup (`blend`)
+
+`freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a
+ready-to-run preset (or queue) to `env/generated/NAME.yaml` so the run is
+plain `run` / `queue run` with no flags to repeat:
+
+- BASE is a preset, or a queue (`jobs:`); for a queue every job is blended
+  and written to `env/generated/NAME/<job>.yaml`.
+- PROVIDER is a setup file (`provider`, `inner`, `vm`, `hosts`, `resources`,
+  `image`, `dist`, `domain`, ...). Its top-level keys replace BASE's; its
+  `name` and `run` are ignored.
+- `--tests` replaces `run.tests` in every generated preset.
+
+```
+freeipa-env blend presets/base-xmlrpc.yaml presets/nested-qemu-external.yaml \
+    --name xmlrpc-vm --tests test_xmlrpc
+freeipa-env run env/generated/xmlrpc-vm.yaml
+```
+
+Generated files are validated before they are written, so a bad merge fails
+in `blend`, not in the run.
 
 ## Preset validation (`check`)
 

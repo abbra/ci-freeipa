@@ -731,6 +731,22 @@ def _fetch_xunit(prov, workdir):
         print('== no xunit report found', file=sys.stderr)
 
 
+def cmd_blend(args):
+    from .blend import blend
+    from .envspec import EnvSpecError
+    try:
+        kind, path = blend(args.base, args.provider, args.name, args.tests)
+    except (ValueError, OSError, EnvSpecError) as e:
+        print(f'error: {e}', file=sys.stderr)
+        return 2
+    print(f'wrote {kind} {path}')
+    if kind == 'queue':
+        print(f'run: freeipa-env queue run {path} --runner ...')
+    else:
+        print(f'run: freeipa-env run {path}')
+    return 0
+
+
 def cmd_queue(args):
     if args.queue_cmd == 'generate':
         from .queue import generate_prci_queue
@@ -1352,6 +1368,17 @@ def main(argv=None):
     qgen.add_argument('-o', '--out', default=None,
                       help='output queue file (default: print to stdout)')
     qgen.set_defaults(fn=cmd_queue)
+    sp = sub.add_parser(
+        'blend', help='generate a preset or queue (env/generated/NAME.yaml) '
+                      'from a base, a provider setup and a test selection; '
+                      'then run it with `run` or `queue run`')
+    sp.add_argument('base', help='base preset or queue YAML')
+    sp.add_argument('provider', help='provider setup YAML (its keys replace '
+                                     'the base\'s, except name and run)')
+    sp.add_argument('--name', required=True, help='generated name')
+    sp.add_argument('--tests', nargs='+', default=None, metavar='TEST',
+                    help='test selection (replaces run.tests)')
+    sp.set_defaults(fn=cmd_blend)
 
     args = p.parse_args(argv)
     try:
