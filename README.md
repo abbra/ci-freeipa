@@ -43,8 +43,18 @@ origin and branch.
 freeipa-env up   ENV.YAML    create (or attach) the environment
 freeipa-env run  ENV.YAML    run the test workflow (install, tests, uninstall)
 freeipa-env down ENV.YAML    collect journal/logs, then tear down
-freeipa-env show ENV.YAML    print environment state
+freeipa-env show ENV.YAML    environment state, image labels, installed IPA/kuipa/ahdapa/akamu builds
 freeipa-env logs ENV.YAML    categorize and retrieve collected logs
+freeipa-env logs ENV.YAML --test T --file NAME   last lines of a collected file, per test and host
+freeipa-env run  ENV.YAML --tests X   run these tests instead of the env's run.tests
+freeipa-env run  ENV.YAML --detach    start the tests and return (survives this command)
+freeipa-env status ENV.YAML            state and output of a detached run
+freeipa-env wait ENV.YAML              wait for a detached run, fetch report, print summary
+freeipa-env summary ENV.YAML           per-test results of the last run with failure causes
+freeipa-env overlay ENV.YAML SRC:/DST  copy files into every container, hash-verified
+freeipa-env reset ENV.YAML             fresh containers on the same spec, old logs kept aside
+freeipa-env list                       environments on this host
+freeipa-env prune [--yes] [--workdirs] remove environments with nothing running
 freeipa-env report [ENV.YAML]  render a self-contained results.html from the artifacts
 freeipa-env resolve ENV.YAML   resolve image refs against the local store (read-only)
 freeipa-env ensure ENV.YAML    build the env's channel images from build.srpm, if missing
@@ -54,9 +64,40 @@ freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          # PRCI-order queue
 freeipa-env check [PRESETS ...]                             # validate presets (no containers)
 ```
 
-Common options: `--workdir DIR` (state/logs dir, default `./<env-name>.env`),
+Common options: `--workdir DIR` (state/logs dir, default
+`$XDG_STATE_HOME/freeipa-env/<env-name>`, i.e.
+`~/.local/state/freeipa-env/<env-name>`, never the current directory),
 `--tool podman`, `--seccomp FILE` (podman), `--strict` (external: fail on
 unreachable ports), `--ssh-key FILE` (external: root SSH key).
+
+### Long runs, repeatable runs
+
+A backup/restore class takes 30 minutes or more. `run` in the foreground is
+tied to the calling process: a wrapper timeout or a sleeping laptop ends the
+command while the tests may keep going inside the master. Use
+`run --detach`; `status` shows the state and the output tail, and `wait`
+(optionally `--timeout`) fetches `nosetests.xml` and prints a per-test summary
+with the cause of each failure. `run --tests X` selects tests without editing
+the env file.
+
+Several classes in one `run` share the containers, so state an uninstall
+leaves behind reaches the next class; that is a real finding, not noise. For
+an independent result use `reset` (fresh containers, previous logs kept as
+`logs.<timestamp>`).
+
+`up` picks a free podman subnet when the env names none, and fails with the
+owning network's name when a named one is taken. It warns when the
+`dns_forwarder` does not answer from the master: an install with DNS fails
+its forwarder check on a resolver that is merely down.
+
+`overlay SRC:/DST ...` copies files into every container and verifies each by
+SHA-256. It records them in `<workdir>/overlay.json`; `show` and the run
+summary then say the run is not a packaged one. Sources must be final files,
+not `*.in` templates.
+
+`list` shows every environment on the host (from its podman network, so
+orphans whose workdir is gone appear too); `prune` removes the stopped ones
+(dry run unless `--yes`).
 
 ## Env file
 
