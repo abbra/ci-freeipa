@@ -584,6 +584,22 @@ def cmd_summary(args):
     return 0
 
 
+def cmd_overlay(args):
+    spec = load_spec(args.env)
+    prov = make_provider(spec, args.workdir or default_workdir(spec), args)
+    _podman_only(prov, 'overlay')
+    pairs = []
+    for item in args.pairs:
+        src, sep, dst = item.partition(':')
+        if not sep or not dst.startswith('/'):
+            print(f'error: {item!r}: expected SRC:/absolute/DST',
+                  file=sys.stderr)
+            return 2
+        pairs.append((src, dst))
+    prov.overlay(pairs, mode=args.mode)
+    return 0
+
+
 def _fetch_xunit(prov, workdir):
     try:
         # ipa-run-tests writes $PWD/nosetests.xml (PWD at invocation;
@@ -926,6 +942,17 @@ def main(argv=None):
     sp.add_argument('--tail', type=int, default=6,
                     help='cause lines per failed test (default 6)')
     sp.set_defaults(fn=cmd_summary)
+
+    sp = sub.add_parser(
+        'overlay', help='copy local files into every container, verify '
+                        'them by hash and mark the run as an overlay run')
+    add_common(sp)
+    sp.add_argument('pairs', nargs='+', metavar='SRC:/DST',
+                    help='a file to the destination path, or a directory to '
+                         'the destination directory')
+    sp.add_argument('--mode', default=None, metavar='MODE',
+                    help='chmod the copies, e.g. 755')
+    sp.set_defaults(fn=cmd_overlay)
 
     sp = sub.add_parser(
         'logs',

@@ -11,6 +11,7 @@ Faithful to the validated Azure flow
   * ipa-test-config.yaml mounted at /root/.ipa/ipa-test-config.yaml
 """
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -706,6 +707,70 @@ class PodmanProvider:
         self._podman(['cp', f'{cname}:{RUN_DIR}/out.log',
                       os.path.join(self.logdir, 'run.log')],
                      check=False, echo=False)
+
+    # ---------------------------------------------------------- overlay
+    def _overlay_record(self):
+        return os.path.join(self.workdir, 'overlay.json')
+
+    @staticmethod
+    def _sha256(path):
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for block in iter(lambda: f.read(1 << 20), b''):
+                h.update(block)
+        return h.hexdigest()
+
+    def overlay(self, pairs, mode=None):
+        """Copy local files into every container and verify each by hash.
+
+        `pairs` are (source, destination): a file goes to the destination
+        path, a directory's files to the destination directory. The copies
+        are recorded in <workdir>/overlay.json so `show` and the summary can
+        say the run was not a packaged one."""
+        files = []
+        for src, dst in pairs:
+            src = os.path.abspath(src)
+            if os.path.isdir(src):
+                for root, _dirs, names in os.walk(src):
+                    for n in sorted(names):
+                        p = os.path.join(root, n)
+                        files.append((p, os.path.join(
+                            dst, os.path.relpath(p, src))))
+            elif os.path.isfile(src):
+                files.append((src, dst))
+            else:
+                raise PodmanError(f'overlay source {src} does not exist')
+        record = []
+        for h in self.spec.hosts:
+            if h.is_external:
+                continue
+            name = self.spec.container_name(h)
+            for src, dst in files:
+                want = self._sha256(src)
+                self._podman(
+                    ['exec', name, 'mkdir', '-p', os.path.dirname(dst)],
+                    echo=False)
+                self._podman(['cp', src, f'{name}:{dst}'], echo=False)
+                if mode:
+                    self._podman(['exec', name, 'chmod', mode, dst],
+                                 echo=False)
+                _rc, out = self._podman(['exec', name, 'sha256sum', dst],
+                                        check=False, echo=False)
+                got = out.split()[0] if out.split() else ''
+                if got != want:
+                    raise PodmanError(
+                        f'overlay verification failed on {name}: {dst} is '
+                        f'{got or "missing"}, expected {want}')
+                record.append({'host': h.name, 'src': src, 'dst': dst,
+                               'sha256': want})
+                print(f'== {h.name}: {dst} ({want[:12]})')
+        previous = []
+        if os.path.exists(self._overlay_record()):
+            with open(self._overlay_record()) as f:
+                previous = json.load(f)
+        with open(self._overlay_record(), 'w') as f:
+            json.dump(previous + record, f, indent=1)
+        return record
 
     # ------------------------------------------------------ diagnostics
     def _collect_journal_namespaces(self, h, name):
