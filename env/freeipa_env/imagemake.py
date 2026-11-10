@@ -45,7 +45,8 @@ def _build_sh():
 
 
 def build_sh_argv(srpm, channel, dist=None, tool='podman', tag=None,
-                  copr=None, copr_ipa=False, ipa_packages=None):
+                  copr=None, copr_ipa=False, ipa_packages=None,
+                  ipa_add=None):
     """Flag arguments (after the build.sh path) that bake one channel image.
     Shared by the local build path (podman provider / `freeipa-env ensure`,
     which shells out to build.sh here) and the remote path (the queue
@@ -72,6 +73,8 @@ def build_sh_argv(srpm, channel, dist=None, tool='podman', tag=None,
             args += ['--copr', repo]
         if ipa_packages:
             args += ['--ipa-packages', str(ipa_packages)]
+        for spec_ in (ipa_add or []):
+            args += ['--add-ipa-package', spec_]
         return args
     args = ['--srpm', str(srpm)] + base
     if tag:
@@ -82,7 +85,8 @@ def build_sh_argv(srpm, channel, dist=None, tool='podman', tag=None,
 
 
 def ensure_channels(spec, workdir, channels, tool='podman', force=False,
-                    copr=None, copr_ipa=False, ipa_packages=None):
+                    copr=None, copr_ipa=False, ipa_packages=None,
+                    ipa_add=None):
     """Ensure each abstract channel reference's full image is present on this
     host, building the absent ones (or all, when ``force``). Returns
     {ref: (concrete_tag, image_id)}.
@@ -118,7 +122,8 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
                 f'this env; run `scripts/make-srpms.sh` and add a `build:` '
                 f'block (or pass --srpm to the ensure command)')
         _build_one(tool, srpm, cname, dist, tag, workdir, force, copr,
-                   copr_ipa=copr_ipa, ipa_packages=ipa_packages)
+                   copr_ipa=copr_ipa, ipa_packages=ipa_packages,
+                   ipa_add=ipa_add)
         img_id = _image_id(tool, concrete)
         if not img_id:
             raise ImageBuildError(
@@ -129,13 +134,13 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
 
 
 def _build_one(tool, srpm, channel, dist, tag, workdir, force, copr=None,
-               copr_ipa=False, ipa_packages=None):
+               copr_ipa=False, ipa_packages=None, ipa_add=None):
     """Run build.sh to (re)build one channel image (compiling the SRPM or, in
     copr_ipa mode, installing the IPA packages from the enabled COPR repos);
     stream output to workdir/logs/images-build.log and the caller's stderr."""
     args = ['bash', _build_sh()] + build_sh_argv(
         srpm, channel, dist=dist, tool=tool, tag=tag, copr=copr,
-        copr_ipa=copr_ipa, ipa_packages=ipa_packages)
+        copr_ipa=copr_ipa, ipa_packages=ipa_packages, ipa_add=ipa_add)
     verb = 'rebuilding' if force else 'building'
     source = ('COPR repos ' + ' '.join(copr or []) if copr_ipa
               else f'SRPM {srpm}')

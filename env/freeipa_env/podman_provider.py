@@ -34,7 +34,8 @@ class PodmanError(Exception):
 
 class PodmanProvider:
     def __init__(self, spec, workdir, tool='podman', seccomp=None,
-                 copr=None, copr_ipa=False, ipa_packages=None):
+                 copr=None, copr_ipa=False, ipa_packages=None,
+                 ipa_add=None):
         self.spec = spec
         self.workdir = workdir
         self._resolved = {}
@@ -43,6 +44,7 @@ class PodmanProvider:
         self.copr = copr
         self.copr_ipa = copr_ipa
         self.ipa_packages = ipa_packages
+        self.ipa_add = ipa_add
         self.logdir = os.path.join(workdir, 'logs')
         self.config_path = os.path.join(workdir, 'ipa-test-config.yaml')
 
@@ -130,7 +132,8 @@ class PodmanProvider:
             result = ensure_channels(self.spec, self.workdir, sorted(refs),
                                      tool=self.tool, force=force,
                                      copr=self.copr, copr_ipa=self.copr_ipa,
-                                     ipa_packages=self.ipa_packages)
+                                     ipa_packages=self.ipa_packages,
+                                     ipa_add=self.ipa_add)
         except ImageBuildError as e:
             raise PodmanError(str(e))
         for ref, (concrete, img_id) in result.items():

@@ -103,7 +103,9 @@ def make_provider(spec, workdir, args):
                               copr_ipa=getattr(args, 'ipa_from_copr',
                                                False),
                               ipa_packages=getattr(args, 'ipa_packages',
-                                                   None))
+                                                   None),
+                              ipa_add=getattr(args, 'add_ipa_package',
+                                              None) or None)
     if spec.provider == 'nested':
         return NestedProvider(spec, workdir, args)
     return ExternalProvider(spec, workdir, strict=args.strict,
@@ -703,6 +705,12 @@ def main(argv=None):
                              'incl. freeipa-server-dns, the client, the '
                              'python3-* bits and python3-ipatests -- '
                              'resolved from the COPR repos)')
+        sp.add_argument('--add-ipa-package', action='append',
+                        metavar='SPEC', default=[],
+                        help='with --ipa-from-copr: extra dnf spec added to '
+                             'the default package list (repeatable), e.g. '
+                             'kuipa; unlike --ipa-packages it never needs '
+                             'the default list copied')
 
     sp = sub.add_parser('up', help='create (or attach) the environment')
     add_common(sp)

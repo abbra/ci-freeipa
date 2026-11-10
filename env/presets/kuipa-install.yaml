@@ -6,16 +6,17 @@
 # The image carries kuipa: freeipa.spec has no Requires on the client side
 # (freeipa-server's `Requires: kuipa-server` is satisfied by the *same*
 # COPR), and channel *creation* is where extra packages belong — `--copr`
-# enables the repo on the image bake, `--ipa-packages` names the specs to
-# install from it. The preset references the channel abstractly, so it stays
-# build-agnostic: bake the channel first, `up` resolves it.
+# enables the repo on the image bake, `--add-ipa-package` adds specs to the
+# default IPA list (`--ipa-packages` would replace it). The preset references
+# the channel abstractly, so it stays build-agnostic: bake the channel first,
+# `up` resolves it.
 #
 # From the ci-freeipa root (dist 45 = this host; abbra/pqc publishes kuipa,
 # kuipa-server and the freeipa dev build for 44 and 45):
 #
 #   # 1. bake the channel image from the COPR builds (nothing built locally)
 #   bash images/build.sh --dist 45 --ipa-from-copr --copr abbra/pqc \
-#        --channel current --ipa-packages "<default IPA list> kuipa kuipa-server"
+#        --channel current --add-ipa-package kuipa --add-ipa-package kuipa-server
 #   # 2. create the three hosts
 #   env/freeipa-env up presets/kuipa-install.yaml
 #   # 3. install them in order. The installer's kuipad steps run inside these:

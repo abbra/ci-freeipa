@@ -91,6 +91,7 @@ PINS=
 COPR_REPOS=
 IPA_FROM_COPR=0
 BUILDEP=0
+ADD_IPA_PACKAGES=
 # Every IPA subpackage (from freeipa.spec.in, minus the source-only
 # `freeipa` meta, which has no binary RPM in COPR): the full server
 # (incl. freeipa-server-dns, required by the --setup-dns install), the
@@ -118,6 +119,7 @@ while [[ $# -gt 0 ]]; do
         --ipa-from-copr) IPA_FROM_COPR=1; shift ;;
         --builddep) BUILDEP=1; shift ;;
         --ipa-packages) IPA_PACKAGES="$2"; shift 2 ;;
+        --add-ipa-package) ADD_IPA_PACKAGES="${ADD_IPA_PACKAGES:+$ADD_IPA_PACKAGES }$2"; shift 2 ;;
         --tool) TOOL="$2"; shift 2 ;;
         --distarch) DISTARCH="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -131,6 +133,11 @@ fi
 if [[ -n "$RPMS" && -n "$SRPM" ]]; then
     echo "--rpms and --srpm are mutually exclusive" >&2; exit 2
 fi
+if [[ -n "$ADD_IPA_PACKAGES" && "$IPA_FROM_COPR" != "1" ]]; then
+    echo "--add-ipa-package only applies with --ipa-from-copr" >&2; exit 2
+fi
+# Extra specs extend the default list, so a caller never has to copy it.
+[[ -n "$ADD_IPA_PACKAGES" ]] && IPA_PACKAGES="$IPA_PACKAGES $ADD_IPA_PACKAGES"
 if [[ "$IPA_FROM_COPR" == "1" ]]; then
     [[ -n "$COPR_REPOS" ]] || {
         echo "--ipa-from-copr requires at least one --copr repo" >&2; exit 2; }
@@ -296,6 +303,12 @@ ls "$WORK/rpms"
 echo "==> Building full image $FULL_IMAGE"
 cp "$SCRIPT_DIR/full/Dockerfile" "$WORK/"
 ARGS=(build -f "$WORK/Dockerfile" -t "$FULL_IMAGE" --build-arg "BASE=$BASE_IMAGE" "$WORK")
+# Provenance of what `freeipa-env show` reports next to the installed builds.
+ARGS+=(--label "org.freeipa-ci.built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+       --label "org.freeipa-ci.dist=$DIST"
+       --label "org.freeipa-ci.source=$([[ "$IPA_FROM_COPR" == "1" ]] && echo copr || echo "${SRPM:+srpm}${RPMS:+rpms}")")
+[[ -n "$COPR_REPOS" ]] && ARGS+=(--label "org.freeipa-ci.copr=$COPR_REPOS")
+[[ "$IPA_FROM_COPR" == "1" ]] && ARGS+=(--label "org.freeipa-ci.ipa-packages=$IPA_PACKAGES")
 [[ -n "$PINS" ]] && ARGS+=(--build-arg "PIN_SPECS=$PINS")
 [[ -n "$COPR_REPOS" ]] && ARGS+=(--build-arg "COPR_REPOS=$COPR_REPOS")
 if [[ "$IPA_FROM_COPR" == "1" ]]; then
