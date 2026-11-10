@@ -17,6 +17,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 import tarfile
 
 CHECK_PORTS = [22, 53, 88, 389, 636]
@@ -49,16 +50,24 @@ class ExternalProvider:
         it uniformly across providers."""
         return {}
 
-    def _ssh_args(self, h):
-        args = ['ssh',
-                '-o', 'BatchMode=yes',
-                '-o', f'ConnectTimeout=10',
+    def _ssh_opts(self, h):
+        args = ['-o', 'BatchMode=yes',
+                '-o', 'ConnectTimeout=10',
                 '-o', 'StrictHostKeyChecking=accept-new']
+        if h.address == '127.0.0.1':
+            # shortcut: a loopback address is a forwarded port to a local
+            # nested VM, whose host keys are regenerated per run and whose
+            # ports get reused; upgrade if loopback hosts gain a stable key.
+            args += ['-o', 'UserKnownHostsFile=/dev/null',
+                     '-o', 'LogLevel=ERROR']
         key = self.ssh_key_path()
         if key:
             args += ['-i', key]
-        args += ['-p', str(h.port or 22), f'{self.ssh_user}@{h.address}']
         return args
+
+    def _ssh_args(self, h):
+        return (['ssh'] + self._ssh_opts(h)
+                + ['-p', str(h.port or 22), f'{self.ssh_user}@{h.address}'])
 
     def _ssh(self, h, cmd, timeout=15, check=True):
         args = self._ssh_args(h) + [cmd]
@@ -249,28 +258,21 @@ class ExternalProvider:
         self._scp(h, local, remote)
 
     def _scp(self, h, local, remote):
-        args = ['scp', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-                '-o', 'StrictHostKeyChecking=accept-new']
-        key = self.ssh_key_path()
-        if key:
-            args += ['-i', key]
-        args += ['-P', str(h.port or 22), local,
-                 f'{self.ssh_user}@{h.address}:{remote}']
+        args = ['scp'] + self._ssh_opts(h) + [
+            '-P', str(h.port or 22), local,
+            f'{self.ssh_user}@{h.address}:{remote}']
         subprocess.run(args, check=True)
 
     def run_in_controller(self, cmd, env=None, log='run.log',
                           timeout=None):
         h = self.spec.master
         envprefix = ''.join(f'{k}={shlex.quote(v)} ' for k, v in (env or {}).items())
-        args = ['ssh', '-t', '-o', 'BatchMode=yes']
-        key = self.ssh_key_path()
-        if key:
-            args += ['-i', key]
-        args += ['-p', str(h.port or 22), f'{self.ssh_user}@{h.address}',
-                 envprefix + cmd]
+        args = self._ssh_args(h)
+        args[1:1] = ['-t']
+        args.append(envprefix + cmd)
         logpath = os.path.join(self.logdir, log)
-        with open(logpath, 'w') as lf:
-            lf.write(f'+ {envprefix}{cmd}\n')
+        with open(logpath, 'wb') as lf:
+            lf.write(f'+ {envprefix}{cmd}\n'.encode())
             lf.flush()
             proc = subprocess.Popen(args, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT)
