@@ -219,6 +219,15 @@ VMs, clear state. `run` drives the inner `freeipa-env run` on the primary VM.
 happens on the VM at `up` time (a provisioned VM is expected to carry the
 `freeipa-ci` image, or set `vm.image_ref` to `podman pull` it).
 
+With `inner: external` nothing runs in containers: each host runs directly on
+the VM it names with `hosts[].vm` (a VM from the backend's list; for qemu,
+`vm.vms[].name`). Every host needs a `vm:`, no VM may serve two hosts, and
+`vm.count` must equal the host count. `up` provisions the VMs, maps each host
+to its VM's forwarded ssh port (`address`/`port`) and private address (`ip`),
+writes the inner external spec, and attaches through `ExternalProvider` from the
+control node. `run` and `show` use the same provider. No ci-tree bootstrap runs
+on the VMs. Example: `env/presets/nested-qemu-external.yaml`.
+
 The nested provider runs on the **control node** (a CI machine with the
 cloud API creds + ssh). A queue of `provider: nested` presets runs under the
 existing `freeipa-env queue` supervisor on a control-node `--runner`; each
@@ -786,7 +795,7 @@ files or directories to narrow the scope. Each preset must parse as an
   previous`); a bare name that is neither a channel nor an image reference
   is flagged as a likely typo.
 * `provider: nested` — the `vm:` block builds a known VM backend and
-  `inner` names a known provider.
+  `inner` names a known provider; with `inner: external` every host has a `vm:`.
 * `provider: external` — every host carries an address.
 
 One line is printed per failing preset, then a summary; the exit code is 0

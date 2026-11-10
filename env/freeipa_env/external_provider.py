@@ -144,7 +144,7 @@ class ExternalProvider:
                 'role': role,
                 'type': 'IPA' if role in ('master', 'replica', 'client')
                          else role.upper(),
-                'ip': h.address,
+                'ip': h.ip or h.address,
             })
         cfg = {
             'admin_name': self.spec.admin_name,

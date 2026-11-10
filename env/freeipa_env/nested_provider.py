@@ -9,6 +9,13 @@ drives the inner provider there by re-invoking ``freeipa-env up/run/down
 <inner-spec> --workdir <remote>`` over ssh.  The whole validated podman
 flow runs unchanged — just on a VM acquired through the API.
 
+Inner provider ``external`` places each host on its own VM: the preset's
+``hosts[].vm`` names a configured VM (``vm.vms[].name``, or ``vm<N>``).  The
+external provider attaches to every VM over its forwarded ssh port, and the
+hosts reach each other over the backend's private network (``ip``).  In
+this mode ``up``/``run``/``down`` run from the control node and nothing is
+shipped to the VMs.
+
 The nested provider runs on the *control node* (a CI machine that has the
 cloud API creds + ssh).  ``up`` provisions its own VM(s) and persists the
 handles to ``<workdir>/nested-state.json`` so that a later, separate
@@ -22,6 +29,8 @@ import shlex
 import yaml
 
 from . import queue
+from .envspec import EnvSpec
+from .external_provider import ExternalProvider
 from .vmbackend import (VMHandle, make_backend, rsync_from, rsync_to,
                         ssh_run)
 
@@ -51,6 +60,13 @@ class NestedProvider:
         return self._cfg('remote_workdir',
                          f'~/ciwork/{self.spec.name}')
 
+    @staticmethod
+    def _rpath(p):
+        """Remote path for the shell: keep a leading ~/ expandable."""
+        if p.startswith('~/'):
+            return '~/' + shlex.quote(p[2:])
+        return shlex.quote(p)
+
     # -------------------------------------------------------------- inner spec
     def _inner_doc(self):
         """The inner EnvSpec dict: same spec, inner provider, no vm block."""
@@ -60,12 +76,15 @@ class NestedProvider:
         d.pop('inner', None)
         return d
 
-    def _write_inner_file(self):
+    def _inner_path(self):
+        return os.path.join(self.workdir, 'inner-env.yaml')
+
+    def _write_inner_file(self, doc=None):
         os.makedirs(self.workdir, exist_ok=True)
-        path = os.path.join(self.workdir, 'inner-env.yaml')
+        path = self._inner_path()
         with open(path, 'w') as f:
-            yaml.safe_dump(self._inner_doc(), f, default_flow_style=False,
-                           sort_keys=False)
+            yaml.safe_dump(doc or self._inner_doc(), f,
+                           default_flow_style=False, sort_keys=False)
         return path
 
     # ------------------------------------------------------------------ state
@@ -105,6 +124,54 @@ class NestedProvider:
                 f'{self._state_path} is missing)')
         self._vms = [VMHandle.from_dict(d) for d in state['vms']]
         self._state = state
+
+    # ------------------------------------------------------ external placement
+    @staticmethod
+    def _vm_name(vm, i):
+        return (vm.meta.get('private') or {}).get('name') or f'vm{i + 1}'
+
+    @staticmethod
+    def _vm_ip(vm):
+        return (vm.meta.get('private') or {}).get('ip') or vm.host
+
+    def _place(self):
+        """host name -> index into self._vms, from each host's `vm:`."""
+        names = [self._vm_name(v, i) for i, v in enumerate(self._vms)]
+        place = {}
+        for h in self.spec.hosts:
+            if not h.vm:
+                raise NestedError(
+                    f'host {h.name}: inner external needs `vm:` '
+                    f'(one of {names})')
+            if h.vm not in names:
+                raise NestedError(
+                    f'host {h.name}: unknown VM {h.vm!r} (configured: {names})')
+            idx = names.index(h.vm)
+            if idx in place.values():
+                raise NestedError(f'VM {h.vm!r} is given to more than one host')
+            place[h.name] = idx
+        return place
+
+    def _external_doc(self, place):
+        """Inner external spec: each host is its VM's forwarded ssh port;
+        `ip` is the address the other hosts use (private network)."""
+        d = self._inner_doc()
+        d['provider'] = 'external'
+        hosts = []
+        for raw in self.spec.raw['hosts']:
+            vm = self._vms[place[raw['name']]]
+            h = {k: v for k, v in raw.items() if k != 'vm'}
+            h.update(name=f"{raw['name']}.{self.spec.domain}",
+                     address=vm.host, port=vm.port, ip=self._vm_ip(vm))
+            hosts.append(h)
+        d['hosts'] = hosts
+        return d
+
+    def _external(self):
+        """ExternalProvider over the inner spec, driven from the control node."""
+        spec = EnvSpec.from_file(self._inner_path())
+        return ExternalProvider(spec, os.path.join(self.workdir, 'inner'),
+                                ssh_key=self._vms[0].key)
 
     # --------------------------------------------------------------- remote op
     def _remote_cmd(self, state, verb):
@@ -148,6 +215,8 @@ class NestedProvider:
 
     # ------------------------------------------------------------------ up/down
     def up(self):
+        if self.inner_type == 'external':
+            return self._up_external()
         count = int(self._cfg('count', 1) or 1)
         timeout = int(self._cfg('ready_timeout', 600))
         os.makedirs(self.logdir, exist_ok=True)
@@ -176,8 +245,63 @@ class NestedProvider:
         print(f'== nested environment {self.spec.name} is up on '
               f'{primary.target}')
 
+    def _up_external(self):
+        count = len(self.spec.hosts)
+        if self._cfg('count') not in (None, count):
+            raise NestedError(
+                f'vm.count is {self._cfg("count")} but there are {count} '
+                f'hosts; inner external runs one VM per host')
+        timeout = int(self._cfg('ready_timeout', 600))
+        os.makedirs(self.logdir, exist_ok=True)
+        print(f'== nested provider: provisioning {count} VM(s) via '
+              f'{self.backend.describe()}')
+        self._vms = self.backend.provision(count)
+        for v in self._vms:
+            self.backend.wait_ready(v, timeout=timeout)
+        self._save_state(self._remote_workdir())
+        place = self._place()
+        self._write_inner_file(self._external_doc(place))
+        print(f'== inner spec (provider: external): {self._inner_path()}')
+        ext = self._external()
+        # ipa-server-install takes the primary name from the first /etc/hosts
+        # line for the IP: drop cloud-init's bare "ip short" line first
+        for h in ext.spec.hosts:
+            short = h.name.split('.')[0]
+            ext._ssh(h, f"hostnamectl set-hostname {h.name} && "
+                        f"sed -i '/^{h.ip} /d' /etc/hosts && "
+                        f"echo '{h.ip} {h.name} {short}' >> /etc/hosts")
+        ext.up()
+        print(f'== nested environment {self.spec.name} is attached on '
+              f'{count} VM(s)')
+
     def down(self, collect=True):
         self._load_vms()
+        if self.inner_type == 'external':
+            ok = self._down_external(collect)
+        else:
+            ok = self._down_podman(collect)
+        for v in self._vms:
+            try:
+                self.backend.terminate(v)
+            except Exception as e:          # noqa: BLE001
+                print(f'== terminate {v.target} failed: {e}')
+        self._clear_state()
+        self._vms = []
+        print(f'== nested environment {self.spec.name} torn down')
+        if not ok:
+            raise NestedError('inner down reported a failure (see above)')
+
+    def _down_external(self, collect):
+        if not collect:
+            return True
+        try:
+            self._external().down(collect=True)
+            return True
+        except Exception as e:              # noqa: BLE001
+            print(f'== external log collection failed: {e}')
+            return False
+
+    def _down_podman(self, collect):
         state = self._state
         primary = self._primary()
         ok = True
@@ -196,16 +320,7 @@ class NestedProvider:
                 self._fetch_xunit(state)
             except Exception as e:          # noqa: BLE001
                 print(f'== artifact fetch-back failed: {e}')
-        for v in self._vms:
-            try:
-                self.backend.terminate(v)
-            except Exception as e:          # noqa: BLE001
-                print(f'== terminate {v.target} failed: {e}')
-        self._clear_state()
-        self._vms = []
-        print(f'== nested environment {self.spec.name} torn down')
-        if not ok:
-            raise NestedError('inner down reported a failure (see above)')
+        return ok
 
     def _fetch_xunit(self, state):
         # collect the inner env's xunit (if any) to <workdir>/logs/nosetests.xml
@@ -225,7 +340,10 @@ class NestedProvider:
 
     # -------------------------------------------------------------------- run
     def copy_to_controller(self, local, remote):
-        # the inner provider (on the VM) does its own copy at run time
+        if self.inner_type == 'external':
+            self._load_vms()
+            return self._external().copy_to_controller(local, remote)
+        # the podman inner provider does its own copy at run time
         pass
 
     def run_in_controller(self, cmd, env=None, log='run.log', timeout=None):
@@ -233,8 +351,13 @@ class NestedProvider:
 
         ``cmd``/``env`` from the CLI are intentionally ignored: the inner
         provider recomputes the identical test selection from the inner
-        spec (which mirrors this spec, including any --run override)."""
+        spec (which mirrors this spec, including any --run override).
+        In external mode the test command is run on the master host instead,
+        so the CLI's ``cmd``/``env`` are passed through."""
         self._load_vms()
+        if self.inner_type == 'external':
+            return self._external().run_in_controller(
+                cmd, env=env, log=log, timeout=timeout)
         state = self._state
         primary = self._primary()
         rc = self._ssh_stream(primary,
@@ -269,6 +392,12 @@ class NestedProvider:
                 self._vms = [VMHandle.from_dict(d) for d in state['vms']]
         if not self._vms:
             print('== no nested environment is up')
+            return
+        if self.inner_type == 'external':
+            for i, v in enumerate(self._vms):
+                print(f'vm[{i}] {v.target} id={v.id or "-"} '
+                      f'[{self.backend.describe()}]')
+            self._external().show()
             return
         for i, v in enumerate(self._vms):
             tag = ' (primary)' if i == 0 else ''
