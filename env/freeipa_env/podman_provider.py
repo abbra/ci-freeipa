@@ -526,6 +526,7 @@ class PodmanProvider:
         self._setup_ssh()
         self._setup_container_overrides()
         self.write_config()
+        self.check_forwarder()
         print(f'== environment {self.spec.name} is up')
 
     def down(self, collect=True):
@@ -650,3 +651,33 @@ class PodmanProvider:
                 lf.write(line)
             rc = proc.wait()
         return rc
+    def check_forwarder(self):
+        """Warn when the DNS forwarder does not answer: an install with DNS
+        fails its forwarder check on a resolver that is only down for the
+        moment, which looks like a product failure."""
+        fwd = self.spec.dns_forwarder
+        master = self.spec.master
+        if not fwd or not master or master.is_external:
+            return
+        name = self.spec.container_name(master)
+        probe = (
+            "python3 - <<'PY'\n"
+            "import sys\n"
+            "try:\n"
+            "    import dns.resolver as r\n"
+            "except ImportError:\n"
+            "    sys.exit(3)\n"
+            "x = r.Resolver(configure=False)\n"
+            f"x.nameservers = ['{fwd}']\n"
+            "x.lifetime = 10\n"
+            "x.resolve('.', 'SOA')\n"
+            "PY")
+        for _ in range(2):
+            rc, _out = self._podman(['exec', name, '/bin/bash', '-c', probe],
+                                    check=False, echo=False)
+            if rc in (0, 3):
+                return
+        print(f'warning: DNS forwarder {fwd} does not answer from {name}; '
+              f'installs with --setup-dns will fail their forwarder check. '
+              f'Set dns_forwarder to a resolver this host can reach.',
+              file=sys.stderr)
