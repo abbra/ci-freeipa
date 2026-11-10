@@ -22,7 +22,9 @@
 #      the fmf tree is only a plain file copy without .git/submodules), from
 #      the dist-git checkout the plan ships (FREEIPA_DISTGIT, see
 #      distgit-srpm.sh), or from the checkout named by FREEIPA_SRC (local
-#      tmt runs)). Needed only if a channel image is missing;
+#      tmt runs)). Needed only if a channel image is missing, and not at
+#      all when FREEIPA_IPA_FROM_COPR / FREEIPA_IPA_FROM_DISTRO make the
+#      image bake install the IPA with dnf instead;
 #   3. build the union of the batch's channel images from those RPMs/SRPMs,
 #      each freshness-checked (a present freeipa-ci/full:<channel> is left
 #      untouched);
@@ -45,7 +47,8 @@ set -uo pipefail
 
 # The ci-freeipa tree root: this script lives in tmt/tests/freeipa-env/,
 # three levels below it.
-# (TMT_TREE points at the plan's tree -- the FreeIPA checkout -- not here.)
+# (TMT_TREE points at the plan's tree -- the FreeIPA checkout, or this repo
+# for its own tmt/plans/distro -- so it is never used to find this tree.)
 CI="$(cd "$(dirname "$0")/../../.." && pwd)"
 CLI="$CI/env/freeipa-env"
 export CI CLI
@@ -122,16 +125,23 @@ COPR_REPOS="${FREEIPA_COPR_REPOS:-}"
 COPR_ARGS=()
 for _r in $COPR_REPOS; do COPR_ARGS+=(--copr "$_r"); done
 [ -n "$COPR_REPOS" ] && echo "== COPR repos for the channel-image bakes: $COPR_REPOS"
-# Install IPA from the enabled COPR repos instead of building it from an
-# SRPM (build.sh --ipa-from-copr): the SRPM download/build stage is skipped
-# entirely and each channel image is baked with `dnf -y install <IPA
-# packages>` against the enabled COPR repos. IPA_PACKAGES (optional)
-# overrides the default dnf spec set (every IPA subpackage -- the full
-# server incl. freeipa-server-dns, the client, the python3-* bits and
-# python3-ipatests).
-IPA_FROM_COPR="${FREEIPA_IPA_FROM_COPR:-}"
+# Install IPA with dnf instead of building it from an SRPM: the SRPM
+# download/build stage is skipped entirely and each channel image is baked
+# with `dnf -y install <IPA packages>`.
+#   FREEIPA_IPA_FROM_COPR    from the enabled COPR repos (build.sh
+#                            --ipa-from-copr);
+#   FREEIPA_IPA_FROM_DISTRO  the packages the guest's own Fedora release
+#                            ships (build.sh --ipa-from-distro --dist <guest
+#                            dist>): the request's compose picks the release
+#                            under test, and no COPR repo is allowed.
+# IPA_PACKAGES (optional) overrides the default dnf spec set (every IPA
+# subpackage -- the full server incl. freeipa-server-dns, the client, the
+# python3-* bits and python3-ipatests).
+IPA_FROM=""
+[ -n "${FREEIPA_IPA_FROM_COPR:-}" ] && IPA_FROM=copr
+[ -n "${FREEIPA_IPA_FROM_DISTRO:-}" ] && IPA_FROM=distro
 IPA_PACKAGES="${FREEIPA_IPA_PACKAGES:-}"
-[ -n "$IPA_FROM_COPR" ] && echo "== IPA-from-COPR mode: $COPR_REPOS${IPA_PACKAGES:+ ($IPA_PACKAGES)}"
+[ -n "$IPA_FROM" ] && echo "== IPA-from-$IPA_FROM mode: ${COPR_REPOS:-no COPR}${IPA_PACKAGES:+ ($IPA_PACKAGES)}"
 # KOJI_TASK_ID: set by Packit on Fedora dist-git CI test requests -- the
 # task id of the Koji scratch build Packit already ran for this PR. When it
 # is present the batch REUSES that build: koji-rpms.py downloads the task's
@@ -244,8 +254,9 @@ build_srpm_from_clone() {
 }
 
 # --- ensure the IPA RPMs + every missing channel image ----------------------
-# The IPA packages reach the channel image through one of four lanes, in this
-# order: IPA-from-COPR (explicit), a pre-supplied SRPM URL, the dist-git
+# The IPA packages reach the channel image through one of five lanes, in this
+# order: IPA-from-COPR or IPA-from-distro (explicit, installed with dnf), a
+# pre-supplied SRPM URL, the dist-git
 # scratch-build reuse (KOJI_TASK_ID: download the RPMs Packit already built),
 # the dist-git tree SRPM build, or the upstream source build. The SRPM lanes
 # only need the SRPM when at least one channel image is absent (a batch whose
@@ -257,15 +268,18 @@ for c in $CHANNELS; do
     fi
 done
 if [ -n "$MISSING" ]; then
-    if [ -n "$IPA_FROM_COPR" ]; then
-        # IPA-from-COPR: no SRPM download/build; bake each missing channel
-        # image with the IPA installed from the enabled COPR repos.
+    if [ -n "$IPA_FROM" ]; then
+        # dnf lanes: no SRPM download/build; bake each missing channel image
+        # with the IPA installed from the enabled COPR repos, or (distro)
+        # from the guest's own Fedora release.
+        DNF_ARGS=("--ipa-from-$IPA_FROM" ${COPR_ARGS[@]+"${COPR_ARGS[@]}"})
+        [ "$IPA_FROM" = distro ] && DNF_ARGS+=(--dist "$(guest_dist)")
         for c in $MISSING; do
-            echo "== building channel $c image with IPA from COPR"
-            bash "$CI/images/build.sh" --ipa-from-copr --channel "$c" \
-                --tool podman ${COPR_ARGS[@]+"${COPR_ARGS[@]}"} \
+            echo "== building channel $c image with IPA from $IPA_FROM"
+            bash "$CI/images/build.sh" "${DNF_ARGS[@]}" --channel "$c" \
+                --tool podman \
                 ${IPA_PACKAGES:+--ipa-packages "$IPA_PACKAGES"} \
-                || die "channel image build (IPA-from-COPR) failed for $c"
+                || die "channel image build (IPA-from-$IPA_FROM) failed for $c"
             podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1 \
                 || die "build succeeded but freeipa-ci/full:$c is still missing"
         done
@@ -319,7 +333,7 @@ if [ -n "$MISSING" ]; then
         done
     fi
 else
-    if [ -n "$IPA_FROM_COPR" ]; then
+    if [ -n "$IPA_FROM" ]; then
         echo "== all channel image(s) present: $(echo $CHANNELS)"
     else
         echo "== all channel image(s) present: $(echo $CHANNELS); SRPM build skipped"

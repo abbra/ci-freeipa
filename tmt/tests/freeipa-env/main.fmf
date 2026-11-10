@@ -2,7 +2,10 @@ summary: Provision a FreeIPA env and run its job recipe
 description: |
     This test lives in the separate ci-freeipa repository; the plan in the
     FreeIPA repo under test discovers it from this repo at a pinned ref.
-    Runs on a Testing Farm guest (or locally). When KOJI_TASK_ID is set
+    Runs on a Testing Farm guest (or locally). With FREEIPA_IPA_FROM_DISTRO
+    (this repo's plans/distro) or FREEIPA_IPA_FROM_COPR nothing is built:
+    the channel images install the IPA with dnf, from the guest's Fedora
+    release or from the COPR repos in FREEIPA_COPR_REPOS. When KOJI_TASK_ID is set
     (Fedora dist-git CI: Packit already ran a Koji scratch build for the
     PR) the test REUSES that build -- it downloads the task's RPMs and
     bakes the channel images from them, with no SRPM and no build image.
