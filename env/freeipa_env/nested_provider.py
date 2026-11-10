@@ -270,6 +270,11 @@ class NestedProvider:
             ext._ssh(h, f"hostnamectl set-hostname {h.name} && "
                         f"sed -i '/^{h.ip} /d' /etc/hosts && "
                         f"echo '{h.ip} {h.name} {short}' >> /etc/hosts")
+        # bootc hosts keep /usr read-only; the overlay lets dnf install into it
+        # (discarded on reboot)
+        if self._cfg('bootc'):
+            for h in ext.spec.hosts:
+                ext._ssh(h, 'bootc usroverlay', timeout=600)
         pkgs = self._cfg('guest_packages') or []
         if pkgs:
             for h in ext.spec.hosts:
