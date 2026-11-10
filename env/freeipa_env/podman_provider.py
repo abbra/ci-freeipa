@@ -11,6 +11,8 @@ Faithful to the validated Azure flow
   * ipa-test-config.yaml mounted at /root/.ipa/ipa-test-config.yaml
 """
 
+import ipaddress
+import json
 import os
 import shlex
 import subprocess
@@ -20,8 +22,10 @@ import time
 from .envspec import EnvSpec
 from .image import channel_tag, is_channel
 
-DEFAULT_V4_SUBNET = '10.89.0.0/24'
-DEFAULT_V6_SUBNET = '2001:db8:1::/64'
+# Networks without a named subnet get the first free one of these, so two
+# environments (or another project's podman network) never collide.
+AUTO_V4_SUBNET = '10.89.{}.0/24'
+AUTO_V6_SUBNET = '2001:db8:89:{:x}::/64'
 CONFIG_PATH_IN_CONTAINER = '/root/.ipa/ipa-test-config.yaml'
 SSH_PRIVKEY_IN_CONTAINER = '/root/.ssh/id_rsa'
 SYSTEMD_TIMEOUT_S = 180
@@ -197,11 +201,56 @@ class PodmanProvider:
         return ref
 
     # ------------------------------------------------------------- containers
+    def _used_subnets(self):
+        """{network: podman network name} for every podman network."""
+        _rc, out = self._podman(['network', 'ls', '--format', '{{.Name}}'],
+                                check=False, echo=False)
+        names = out.split()
+        if not names:
+            return {}
+        _rc, out = self._podman(['network', 'inspect'] + names,
+                                check=False, echo=False)
+        try:
+            networks = json.loads(out)
+        except ValueError:
+            return {}
+        used = {}
+        for n in networks:
+            for s in n.get('subnets') or n.get('Subnets') or []:
+                cidr = s.get('subnet') or s.get('Subnet')
+                if cidr:
+                    used[ipaddress.ip_network(cidr, strict=False)] = (
+                        n.get('name') or n.get('Name'))
+        return used
+
+    def _choose_subnet(self, named, template, count, used):
+        """The subnet to create: `named` if the spec gives one (it must be
+        free), else the first free of `template` formatted 0..count-1."""
+        def clash(net):
+            return next((nm for u, nm in used.items()
+                         if u.version == net.version and u.overlaps(net)),
+                        None)
+        if named:
+            other = clash(ipaddress.ip_network(named, strict=False))
+            if other:
+                raise PodmanError(
+                    f'subnet {named} is already used by the podman network '
+                    f'{other}; set another subnet_v4/subnet_v6 in the spec')
+            return named
+        for i in range(count):
+            cand = template.format(i)
+            if not clash(ipaddress.ip_network(cand)):
+                return cand
+        raise PodmanError(f'no free subnet left in {template}')
+
     def _network_args(self):
+        used = self._used_subnets()
         args = ['network', 'create']
-        args += ['--subnet', self.spec.subnet_v4 or DEFAULT_V4_SUBNET]
+        args += ['--subnet', self._choose_subnet(
+            self.spec.subnet_v4, AUTO_V4_SUBNET, 256, used)]
         if self.spec.ipv6:
-            args += ['--subnet', self.spec.subnet_v6 or DEFAULT_V6_SUBNET]
+            args += ['--subnet', self._choose_subnet(
+                self.spec.subnet_v6, AUTO_V6_SUBNET, 256, used)]
         args.append(self.spec.network_name())
         return args
 
@@ -500,8 +549,6 @@ class PodmanProvider:
             name = self.spec.container_name(h)
             try:
                 _rc, out = self._podman(['inspect', name], echo=False)
-                _rc, out = self._podman(['inspect', name])
-                import json
                 d = json.loads(out)[0]
                 ip = (d['NetworkSettings']['Networks']
                       .get(self.spec.network_name(), {})
