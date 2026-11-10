@@ -7,6 +7,8 @@ description: Investigate or develop FreeIPA changes using ci-freeipa to build th
 
 Use this when a request involves investigating, developing, or validating FreeIPA changes against a real master, replica, client, or other multihost topology. ci-freeipa is a separate checkout from the FreeIPA worktree. Read its `README.md`, the relevant `env/presets/` examples, and the selected FreeIPA tests before choosing a workflow; the tools and image contents evolve.
 
+To test the unmodified packages a Fedora release ships (no worktree, no COPR repository), use [ci-freeipa-distro-packages](../ci-freeipa-distro-packages/SKILL.md) instead.
+
 ## 1. Scope the experiment
 
 - Identify the exact FreeIPA worktree and branch, including tracked modifications and untracked files, submodules, dependencies, and tests. Do not assume a published branch or existing image contains local changes. Preserve user changes and existing containers, images, networks, and workdirs.
