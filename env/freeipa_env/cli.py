@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import time
 
@@ -618,6 +620,82 @@ def cmd_reset(args):
     return 0
 
 
+def _podman_lines(tool, argv):
+    p = subprocess.run([tool] + argv, capture_output=True, text=True)
+    return p.stdout.splitlines() if p.returncode == 0 else []
+
+
+def _environments(tool):
+    """{env name: [(container, status)]} for every env-* podman network, so
+    environments whose workdir is gone (or never was here) are listed too."""
+    envs = {}
+    for net in _podman_lines(tool, ['network', 'ls', '--format',
+                                    '{{.Name}}']):
+        if not net.startswith('env-'):
+            continue
+        rows = [ln.split('|', 1) for ln in _podman_lines(
+            tool, ['ps', '-a', '--filter', f'network={net}', '--format',
+                   '{{.Names}}|{{.Status}}'])]
+        envs[net[len('env-'):]] = rows
+    return envs
+
+
+def _state_dir():
+    return os.path.join(state_home(), 'freeipa-env')
+
+
+def cmd_list(args):
+    envs = _environments(args.tool)
+    workdirs = (set(os.listdir(_state_dir()))
+                if os.path.isdir(_state_dir()) else set())
+    for name in sorted(set(envs) | workdirs):
+        rows = envs.get(name)
+        if rows is None:
+            state = 'no containers'
+        else:
+            up = sum(1 for _n, s in rows if s.startswith('Up'))
+            state = f'{up}/{len(rows)} running'
+        wd = os.path.join(_state_dir(), name) if name in workdirs else '-'
+        print(f'{name:28s} {state:16s} {wd}')
+    if not envs and not workdirs:
+        print('no environments')
+    return 0
+
+
+def cmd_prune(args):
+    """Remove the containers and network of environments with nothing running
+    (and, with --workdirs, their workdirs). Dry run unless --yes."""
+    envs = _environments(args.tool)
+    idle = {n: r for n, r in envs.items()
+            if not any(s.startswith('Up') for _n, s in r)}
+    workdirs = (set(os.listdir(_state_dir()))
+                if os.path.isdir(_state_dir()) else set())
+    victims = []
+    for name in sorted(idle):
+        print(f'environment {name}: {len(idle[name])} stopped container(s) '
+              f'and its network')
+        victims.append(name)
+    gone = sorted(workdirs - {n for n, r in envs.items()
+                              if any(s.startswith('Up') for _n, s in r)})
+    if args.workdirs:
+        for name in gone:
+            print(f'workdir {os.path.join(_state_dir(), name)}')
+    if not args.yes:
+        print('== dry run: nothing removed (--yes to remove)')
+        return 0
+    for name in victims:
+        for cname, _status in idle[name]:
+            subprocess.run([args.tool, 'rm', '-f', cname],
+                           capture_output=True)
+        subprocess.run([args.tool, 'network', 'rm', f'env-{name}'],
+                       capture_output=True)
+    if args.workdirs:
+        for name in gone:
+            shutil.rmtree(os.path.join(_state_dir(), name),
+                          ignore_errors=True)
+    return 0
+
+
 def _fetch_xunit(prov, workdir):
     try:
         # ipa-run-tests writes $PWD/nosetests.xml (PWD at invocation;
@@ -977,6 +1055,19 @@ def main(argv=None):
                       'the previous logs as logs.<timestamp>')
     add_common(sp)
     sp.set_defaults(fn=cmd_reset)
+
+    sp = sub.add_parser(
+        'list', help='environments on this host: containers and workdir')
+    sp.set_defaults(fn=cmd_list)
+
+    sp = sub.add_parser(
+        'prune', help='remove the containers and network of environments '
+                      'with nothing running (dry run unless --yes)')
+    sp.add_argument('--yes', action='store_true', help='really remove')
+    sp.add_argument('--workdirs', action='store_true',
+                    help='also remove the workdirs of environments that are '
+                         'not running (their logs go with them)')
+    sp.set_defaults(fn=cmd_prune)
 
     sp = sub.add_parser(
         'logs',
