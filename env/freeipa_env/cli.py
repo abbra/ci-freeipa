@@ -255,6 +255,37 @@ def cmd_migrate(args):
     return 0
 
 
+def _show_files(workdir, args):
+    """The last --lines of every collected file matching --file, restricted
+    to tests whose log directory contains --test and to --host. The
+    collected tree is logs/collected/<host>/ipa-env/logs/<test>/<host>/...,
+    which nobody should have to type."""
+    import fnmatch
+    root = os.path.join(workdir, 'logs', 'collected')
+    hits = []
+    for base, _dirs, names in os.walk(root):
+        for name in names:
+            path = os.path.join(base, name)
+            rel = os.path.relpath(path, root)
+            if not fnmatch.fnmatch(name, args.file):
+                continue
+            if args.test and args.test not in rel:
+                continue
+            if args.host and args.host not in rel:
+                continue
+            hits.append((rel, path))
+    if not hits:
+        print(f'no collected file matches {args.file!r} under {root}',
+              file=sys.stderr)
+        return 1
+    for rel, path in sorted(hits):
+        print(f'== {rel}')
+        with open(path, errors='replace') as f:
+            lines = f.read().splitlines()
+        print('\n'.join(lines[-args.lines:]))
+    return 0
+
+
 def cmd_logs(args):
     workdir = args.workdir
     spec = None
@@ -280,6 +311,8 @@ def cmd_logs(args):
             prov.collect_logs()
         except (PodmanError, ExternalError) as e:
             print(f'warning: log collection failed: {e}', file=sys.stderr)
+    if args.file:
+        return _show_files(workdir, args)
     if args.pattern:
         try:
             args.pattern_compiled = re.compile(args.pattern)
@@ -786,6 +819,14 @@ def main(argv=None):
                     help='machine-readable summary (with --list)')
     sp.add_argument('--refresh', action='store_true',
                     help='re-collect logs from a live environment first')
+    sp.add_argument('--test', default=None, metavar='TEXT',
+                    help='with --file: only logs of tests whose name '
+                         'contains TEXT')
+    sp.add_argument('--file', default=None, metavar='NAME',
+                    help='print the last --lines lines of every collected '
+                         'file called NAME (a glob, e.g. ipaserver-install.'
+                         'log), per test and host, instead of the category '
+                         'view')
     sp.add_argument('--html', nargs='?', const='auto', default=None,
                     metavar='OUT',
                     help='instead of the terminal view, write a '
