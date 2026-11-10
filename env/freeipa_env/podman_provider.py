@@ -40,7 +40,7 @@ class PodmanError(Exception):
 
 class PodmanProvider:
     def __init__(self, spec, workdir, tool='podman', seccomp=None,
-                 copr=None, copr_ipa=False, ipa_packages=None,
+                 copr=None, ipa_from=None, ipa_packages=None,
                  ipa_add=None):
         self.spec = spec
         self.workdir = workdir
@@ -48,7 +48,7 @@ class PodmanProvider:
         self.tool = tool
         self.seccomp = seccomp
         self.copr = copr
-        self.copr_ipa = copr_ipa
+        self.ipa_from = ipa_from
         self.ipa_packages = ipa_packages
         self.ipa_add = ipa_add
         self.logdir = os.path.join(workdir, 'logs')
@@ -109,8 +109,9 @@ class PodmanProvider:
         and named it in the spec's ``build.srpm``; here, on this host, we
         compile it inside the dedicated ``freeipa-ci/build`` image and bake the
         channel ``full`` image from the resulting binary RPMs. Alternatively,
-        when the provider is in ``copr_ipa`` mode, the IPA packages are
-        installed from the enabled COPR repos (no SRPM). Idempotent:
+        when the provider has ``ipa_from`` set, the IPA packages are
+        installed with dnf from the enabled COPR repos (``'copr'``) or from
+        the distribution's own (``'distro'``), with no SRPM. Idempotent:
         channels already present are skipped unless ``force`` (or
         ``build.force`` in the spec) is set, in which case they are rebuilt.
         Explicit (non-channel) image references are not built — they are
@@ -126,19 +127,22 @@ class PodmanProvider:
                 refs.add(ref)
         if not refs:
             return {}
-        # nothing to build unless the spec points at an SRPM or we are
-        # installing IPA from COPR; otherwise leave resolution to
-        # resolve_images (which raises its usual "build it" error for a
-        # missing channel).
-        if not self.copr_ipa and not (self.spec.build or {}).get('srpm'):
-            return {}
+        # No SRPM on the spec and no COPR repo: the distribution's own
+        # packages (build.sh's default too). COPR repos without a source
+        # build nothing; resolve_images then raises its usual "build it"
+        # error for a missing channel.
+        ipa_from = self.ipa_from
+        if not ipa_from and not (self.spec.build or {}).get('srpm'):
+            if self.copr:
+                return {}
+            ipa_from = 'distro'
         if force is None:
             force = bool((self.spec.build or {}).get('force', False))
         from .imagemake import ImageBuildError, ensure_channels
         try:
             result = ensure_channels(self.spec, self.workdir, sorted(refs),
                                      tool=self.tool, force=force,
-                                     copr=self.copr, copr_ipa=self.copr_ipa,
+                                     copr=self.copr, ipa_from=ipa_from,
                                      ipa_packages=self.ipa_packages,
                                      ipa_add=self.ipa_add)
         except ImageBuildError as e:

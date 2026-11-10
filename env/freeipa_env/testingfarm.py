@@ -49,6 +49,9 @@ DEFAULT_ARCH = 'x86_64'
 # The plan node in the FreeIPA repo under test; that plan pins this repo
 # (discover url + ref) and this test is discovered from it.
 DEFAULT_PLAN = '/ci/tmt/plans/freeipa-env'
+# This repo's own plan (tmt/plans/distro.fmf): the IPA packages come from the
+# guest's Fedora release, so no FreeIPA repo is involved (--ipa-from-distro).
+DISTRO_PLAN = '/tmt/plans/distro'
 DEFAULT_POLL = 30  # seconds between GETs
 TERMINAL_STATES = ('complete', 'error', 'canceled', 'cancel-requested')
 
@@ -289,7 +292,7 @@ def fetch_artifacts(request_id, workdir, token, url=DEFAULT_URL,
 
 
 def build_tf_request(cfg, jobs, timeout_s, srpm=None, copr=None,
-                     copr_ipa=False, ipa_packages=None):
+                     ipa_from=None, ipa_packages=None):
     """The TF request body for a **batch** of queue jobs (pure; used by the
     runner and by ``--dry-run``). One request carries the whole list; the
     guest builds its SRPM/channel images once and runs every preset (see
@@ -299,7 +302,9 @@ def build_tf_request(cfg, jobs, timeout_s, srpm=None, copr=None,
     URL (from ``--srpm``); when set it takes precedence over
     ``cfg['srpm_url']``. ``copr`` is a list of OWNER/PROJECT repos enabled
     on the guest's channel-image bakes (see tf-runner.sh); when set it is
-    emitted as the space-joined ``FREEIPA_COPR_REPOS`` request variable."""
+    emitted as the space-joined ``FREEIPA_COPR_REPOS`` request variable.
+    ``ipa_from`` (``'copr'`` / ``'distro'``) makes the guest install the IPA
+    with dnf instead of building it."""
     job_list = [
         {'key': j.key, 'preset_rel': j.preset_rel} for j in jobs
     ]
@@ -322,12 +327,13 @@ def build_tf_request(cfg, jobs, timeout_s, srpm=None, copr=None,
         variables['FREEIPA_CHANNEL'] = cfg['channel']
     if copr:
         variables['FREEIPA_COPR_REPOS'] = ' '.join(copr)
-    if copr_ipa:
-        # instead of building the IPA from a shipped SRPM, the guest installs
-        # the IPA packages from the enabled COPR repos on its channel image
-        # bakes (build.sh --ipa-from-copr); it skips the SRPM download/build
+    if ipa_from:
+        # instead of building the IPA from an SRPM, the guest installs the
+        # IPA packages with dnf on its channel image bakes: from the enabled
+        # COPR repos (build.sh --ipa-from-copr) or the ones its own Fedora
+        # release ships (--ipa-from-distro). It skips the SRPM download/build
         # stage entirely. ipa_packages overrides the default dnf spec set.
-        variables['FREEIPA_IPA_FROM_COPR'] = '1'
+        variables[f'FREEIPA_IPA_FROM_{ipa_from.upper()}'] = '1'
         if ipa_packages:
             variables['FREEIPA_IPA_PACKAGES'] = str(ipa_packages)
     for k, v in (cfg.get('extra_variables') or {}).items():
@@ -411,7 +417,7 @@ class TestingFarmRunner(Runner):
         return 0, ''
 
     def build_channels(self, srpm, srpm_dir, channels, remote_ci,
-                       image_timeout, log=None, copr=None, copr_ipa=False,
+                       image_timeout, log=None, copr=None, ipa_from=None,
                        ipa_packages=None):
         # The TF guest builds its channel images at job time.
         pass
@@ -430,7 +436,7 @@ class TestingFarmRunner(Runner):
         preset's own status is graded from its fetched ``results.yaml``."""
         body = build_tf_request(self.cfg, jobs, timeout_s,
                                 copr=self.cfg.get('copr') or None,
-                                copr_ipa=bool(self.cfg.get('copr_ipa')),
+                                ipa_from=self.cfg.get('ipa_from'),
                                 ipa_packages=self.cfg.get('ipa_packages'))
         # Local per-preset artifact root, inside the queue's outdir when the
         # supervisor provides one (repo-local: no home-dir writes, no

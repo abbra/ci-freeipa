@@ -45,7 +45,7 @@ def _build_sh():
 
 
 def build_sh_argv(srpm, channel, dist=None, tool='podman', tag=None,
-                  copr=None, copr_ipa=False, ipa_packages=None,
+                  copr=None, ipa_from=None, ipa_packages=None,
                   ipa_add=None):
     """Flag arguments (after the build.sh path) that bake one channel image.
     Shared by the local build path (podman provider / `freeipa-env ensure`,
@@ -53,39 +53,35 @@ def build_sh_argv(srpm, channel, dist=None, tool='podman', tag=None,
     supervisor, which runs the identical command on a runner) so both invoke
     build.sh identically.
 
-    Two IPA-source modes, both of which enable the given COPR repos on the
-    channel-image bake (uniform, regardless of which runner builds it):
-      * ``copr_ipa`` False (default): compile ``srpm`` and bake the full image
-        from the resulting RPMs; each COPR repo is an *extra* repo for the
+    Three IPA-source modes (``ipa_from``):
+      * ``None`` (default): compile ``srpm`` and bake the full image from the
+        resulting RPMs; each COPR repo is an *extra* repo for the
         BuildRequires/dependency installs.
-      * ``copr_ipa`` True: install the IPA packages from the enabled COPR
-        repos (`build.sh --ipa-from-copr`) instead of from an SRPM/RPM set.
-        ``srpm`` is ignored; ``ipa_packages`` (when set) overrides the default
-        dnf spec set, otherwise build.sh's default applies."""
+      * ``'copr'``: install the IPA packages from the enabled COPR repos
+        (`build.sh --ipa-from-copr`) instead of from an SRPM/RPM set.
+      * ``'distro'``: install the IPA packages the distribution itself ships
+        (`build.sh --ipa-from-distro`); no COPR repo may be given.
+    In both dnf modes ``srpm`` is ignored; ``ipa_packages`` (when set)
+    overrides the default dnf spec set and ``ipa_add`` extends it."""
     base = ['--channel', str(channel),
             '--dist', str(dist or '44'),
             '--tool', str(tool or 'podman')]
-    if copr_ipa:
-        args = ['--ipa-from-copr'] + base
-        if tag:
-            args += ['--tag', str(tag)]
-        for repo in (copr or []):
-            args += ['--copr', repo]
-        if ipa_packages:
-            args += ['--ipa-packages', str(ipa_packages)]
-        for spec_ in (ipa_add or []):
-            args += ['--add-ipa-package', spec_]
-        return args
-    args = ['--srpm', str(srpm)] + base
     if tag:
-        args += ['--tag', str(tag)]
+        base += ['--tag', str(tag)]
     for repo in (copr or []):
-        args += ['--copr', repo]
+        base += ['--copr', repo]
+    if not ipa_from:
+        return ['--srpm', str(srpm)] + base
+    args = [f'--ipa-from-{ipa_from}'] + base
+    if ipa_packages:
+        args += ['--ipa-packages', str(ipa_packages)]
+    for spec_ in (ipa_add or []):
+        args += ['--add-ipa-package', spec_]
     return args
 
 
 def ensure_channels(spec, workdir, channels, tool='podman', force=False,
-                    copr=None, copr_ipa=False, ipa_packages=None,
+                    copr=None, ipa_from=None, ipa_packages=None,
                     ipa_add=None):
     """Ensure each abstract channel reference's full image is present on this
     host, building the absent ones (or all, when ``force``). Returns
@@ -93,10 +89,11 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
 
     Channels already present are left untouched unless ``force``. The IPA
     source is the spec's ``build.srpm`` (compiled + baked) unless
-    ``copr_ipa`` is set, in which case the IPA packages are installed from the
-    given COPR repos (no SRPM needed; ``ipa_packages`` overrides the default
-    dnf spec set). Raises ImageBuildError if a build is required but the
-    SRPM is missing (non-copr mode) or build.sh fails.
+    ``ipa_from`` is set, in which case the IPA packages are installed with
+    dnf from the given COPR repos (``'copr'``) or from the distribution's own
+    (``'distro'``); no SRPM is needed and ``ipa_packages`` overrides the
+    default dnf spec set. Raises ImageBuildError if a build is required but
+    the SRPM is missing (SRPM mode) or build.sh fails.
     """
     build = getattr(spec, 'build', None) or {}
     srpm = build.get('srpm')
@@ -116,13 +113,13 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
         if img_id and not force:
             out[ref] = (concrete, img_id)
             continue
-        if not copr_ipa and not srpm:
+        if not ipa_from and not srpm:
             raise ImageBuildError(
                 f'channel {ref!r} needs a build but no build.srpm is set on '
                 f'this env; run `scripts/make-srpms.sh` and add a `build:` '
                 f'block (or pass --srpm to the ensure command)')
         _build_one(tool, srpm, cname, dist, tag, workdir, force, copr,
-                   copr_ipa=copr_ipa, ipa_packages=ipa_packages,
+                   ipa_from=ipa_from, ipa_packages=ipa_packages,
                    ipa_add=ipa_add)
         img_id = _image_id(tool, concrete)
         if not img_id:
@@ -134,16 +131,17 @@ def ensure_channels(spec, workdir, channels, tool='podman', force=False,
 
 
 def _build_one(tool, srpm, channel, dist, tag, workdir, force, copr=None,
-               copr_ipa=False, ipa_packages=None, ipa_add=None):
-    """Run build.sh to (re)build one channel image (compiling the SRPM or, in
-    copr_ipa mode, installing the IPA packages from the enabled COPR repos);
+               ipa_from=None, ipa_packages=None, ipa_add=None):
+    """Run build.sh to (re)build one channel image (compiling the SRPM or,
+    with ``ipa_from``, installing the IPA packages with dnf);
     stream output to workdir/logs/images-build.log and the caller's stderr."""
     args = ['bash', _build_sh()] + build_sh_argv(
         srpm, channel, dist=dist, tool=tool, tag=tag, copr=copr,
-        copr_ipa=copr_ipa, ipa_packages=ipa_packages, ipa_add=ipa_add)
+        ipa_from=ipa_from, ipa_packages=ipa_packages, ipa_add=ipa_add)
     verb = 'rebuilding' if force else 'building'
-    source = ('COPR repos ' + ' '.join(copr or []) if copr_ipa
-              else f'SRPM {srpm}')
+    source = {'copr': 'COPR repos ' + ' '.join(copr or []),
+              'distro': 'the distribution repos'}.get(ipa_from,
+                                                      f'SRPM {srpm}')
     print(f'== {verb} channel image for {channel} from {source}',
           file=sys.stderr)
     logpath = os.path.join(workdir, 'logs', 'images-build.log')
@@ -156,7 +154,7 @@ def _build_one(tool, srpm, channel, dist, tag, workdir, force, copr=None,
             stdin=subprocess.DEVNULL, bufsize=1,
             universal_newlines=True) as p:
         header = (f'== {verb} channel {channel} '
-                  f'({"copr-ipa" if copr_ipa else f"srpm={srpm}"}'
+                  f'({f"ipa-from-{ipa_from}" if ipa_from else f"srpm={srpm}"}'
                   f', dist={dist or 44})')
         lf.write(header + '\n')
         lf.flush()

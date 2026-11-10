@@ -111,8 +111,7 @@ def make_provider(spec, workdir, args):
         return PodmanProvider(spec, workdir, tool=args.tool,
                               seccomp=args.seccomp,
                               copr=getattr(args, 'copr', None) or None,
-                              copr_ipa=getattr(args, 'ipa_from_copr',
-                                               False),
+                              ipa_from=getattr(args, 'ipa_from', None),
                               ipa_packages=getattr(args, 'ipa_packages',
                                                    None),
                               ipa_add=getattr(args, 'add_ipa_package',
@@ -206,9 +205,9 @@ def cmd_ensure(args):
     force = getattr(args, 'build', False) or None
     ensured = prov.ensure_images(force=force)
     if not ensured:
-        print('no channel images to build locally (the provider builds at '
-              '`up` time on the provisioned host, e.g. a nested provider '
-              'builds on the VM; or the spec has no build.srpm)')
+        print('no channel images to build locally (the env names no '
+              'channel, the provider builds on the provisioned host, or '
+              '--copr was given without --ipa-from-copr or a build.srpm)')
         return 0
     for ref, (concrete, img_id) in ensured.items():
         print(f'{ref} {concrete} {img_id}')
@@ -765,6 +764,12 @@ def cmd_queue(args):
         print('error: no jobs left after filtering', file=sys.stderr)
         return 2
     q.jobs = jobs
+    # No source named: the packages the distribution ships. A testing-farm
+    # run that names a FreeIPA repo keeps building that repo on the guest.
+    if not (args.ipa_from or args.srpm or args.copr or (
+            any(s.strip() == 'testing-farm' for s in args.runner)
+            and (args.freeipa_src or args.tf_repo_url))):
+        args.ipa_from = 'distro'
     tf_cfg = _tf_config(args)
     if tf_cfg is None:
         return 2
@@ -783,7 +788,7 @@ def cmd_queue(args):
                       'JSON below is what would be submitted)')
             srpm = getattr(args, 'srpm', None)
             copr = getattr(args, 'copr', None) or None
-            copr_ipa = getattr(args, 'ipa_from_copr', False)
+            ipa_from = getattr(args, 'ipa_from', None)
             ipa_packages = getattr(args, 'ipa_packages', None)
             # The supervisor dequeues round-robin over the runners; a TF
             # runner submits its whole subsequence as ONE batched request
@@ -807,7 +812,7 @@ def cmd_queue(args):
                 print(json.dumps(
                     build_tf_request(tf_cfg, sub, args.job_timeout,
                                      srpm=srpm, copr=copr,
-                                     copr_ipa=copr_ipa,
+                                     ipa_from=ipa_from,
                                      ipa_packages=ipa_packages),
                     indent=2))
         return 0
@@ -820,15 +825,19 @@ def cmd_queue(args):
         return 2
     srpm = getattr(args, 'srpm', None)
     copr = getattr(args, 'copr', None) or None
-    copr_ipa = getattr(args, 'ipa_from_copr', False)
+    ipa_from = getattr(args, 'ipa_from', None)
     ipa_packages = getattr(args, 'ipa_packages', None)
-    if copr_ipa and not copr:
+    if ipa_from == 'copr' and not copr:
         print('error: --ipa-from-copr requires at least one --copr repo',
               file=sys.stderr)
         return 2
-    if copr_ipa and srpm:
-        print('error: --ipa-from-copr is mutually exclusive with --srpm',
-              file=sys.stderr)
+    if ipa_from == 'distro' and copr:
+        print('error: --ipa-from-distro excludes --copr (use '
+              '--ipa-from-copr)', file=sys.stderr)
+        return 2
+    if ipa_from and srpm:
+        print(f'error: --ipa-from-{ipa_from} is mutually exclusive with '
+              '--srpm', file=sys.stderr)
         return 2
     has_tf = any(s.strip() == 'testing-farm' for s in args.runner)
     if srpm and not has_tf and not os.path.exists(srpm):
@@ -842,7 +851,7 @@ def cmd_queue(args):
                      bootstrap=not args.no_bootstrap, srpm=srpm,
                      srpm_dir=srpm_dir,
                      image_timeout=getattr(args, 'image_timeout', 9000),
-                     copr=copr, copr_ipa=copr_ipa, ipa_packages=ipa_packages)
+                     copr=copr, ipa_from=ipa_from, ipa_packages=ipa_packages)
     try:
         return sup.run()
     except SupervisorError as e:
@@ -887,7 +896,16 @@ def _tf_config(args):
         return None
     # The repo under test is a freeipa checkout, never this ci-freeipa one:
     # its URL/ref default from --freeipa-src, or must be given explicitly.
+    # Except with --ipa-from-distro: nothing is built, so no FreeIPA checkout
+    # is involved and the request runs this repo's own plan from this
+    # checkout's origin and branch.
     src = getattr(args, 'freeipa_src', None)
+    plan = getattr(args, 'tf_plan', None)
+    if getattr(args, 'ipa_from', None) == 'distro' and not src:
+        from .runner import REPO_CI_DIR
+        from .testingfarm import DISTRO_PLAN
+        src = REPO_CI_DIR
+        plan = plan or DISTRO_PLAN
     repo_url = getattr(args, 'tf_repo_url', None)
     if not repo_url:
         if not src:
@@ -915,7 +933,7 @@ def _tf_config(args):
         'ref': ref,
         'arch': getattr(args, 'tf_arch', None),
         'compose': getattr(args, 'tf_compose', None),
-        'plan': getattr(args, 'tf_plan', None),
+        'plan': plan,
     }
     for kv in getattr(args, 'tf_variable', []):
         k, _, v = kv.partition('=')
@@ -941,6 +959,27 @@ def main(argv=None):
                    help='external provider: fail on unreachable ports')
     sub = p.add_subparsers(dest='cmd', required=True)
 
+    def add_ipa_from(sp):
+        """Install the IPA with dnf instead of building it: args.ipa_from is
+        'copr', 'distro' or None. None becomes 'distro' when no SRPM, COPR
+        repo or (testing-farm) FreeIPA repo is named."""
+        g = sp.add_mutually_exclusive_group()
+        g.add_argument('--ipa-from-copr', dest='ipa_from',
+                       action='store_const', const='copr',
+                       help='install the IPA packages from the enabled COPR '
+                            'repos (--copr) instead of building them from an '
+                            'SRPM/RPM set (build.sh --ipa-from-copr); '
+                            'requires at least one --copr')
+        g.add_argument('--ipa-from-distro', dest='ipa_from',
+                       action='store_const', const='distro',
+                       help='install the IPA packages the Fedora release '
+                            'itself ships: no build, no COPR repo (build.sh '
+                            '--ipa-from-distro); excludes --copr and --srpm. '
+                            'The release is the env `dist:` (up/ensure), 44 '
+                            'on a host runner, the guest compose on the '
+                            'testing-farm runner. This is the default when '
+                            'no --copr, SRPM or FreeIPA repo is named')
+
     def add_common(sp):
         sp.add_argument('env', help='env.yaml (or preset) path')
         sp.add_argument('--workdir', default=None,
@@ -956,21 +995,17 @@ def main(argv=None):
                              'image builds (repeatable); customizes channel '
                              '*creation* without touching the preset. '
                              'Used by up/ensure with the podman provider.')
-        sp.add_argument('--ipa-from-copr', action='store_true',
-                        help='install the IPA packages from the enabled '
-                             'COPR repos (--copr) instead of building them '
-                             'from an SRPM/RPM set (build.sh '
-                             '--ipa-from-copr); requires at least one --copr')
+        add_ipa_from(sp)
         sp.add_argument('--ipa-packages', default=None, metavar='SPECS',
                         help='space-separated dnf specs to install in '
-                             '--ipa-from-copr mode (default: '
-                             'all IPA subpackages -- the full server '
-                             'incl. freeipa-server-dns, the client, the '
-                             'python3-* bits and python3-ipatests -- '
-                             'resolved from the COPR repos)')
+                             '--ipa-from-copr/--ipa-from-distro mode '
+                             '(default: all IPA subpackages -- the full '
+                             'server incl. freeipa-server-dns, the client, '
+                             'the python3-* bits and python3-ipatests)')
         sp.add_argument('--add-ipa-package', action='append',
                         metavar='SPEC', default=[],
-                        help='with --ipa-from-copr: extra dnf spec added to '
+                        help='with --ipa-from-copr/--ipa-from-distro: extra '
+                             'dnf spec added to '
                              'the default package list (repeatable), e.g. '
                              'kuipa; unlike --ipa-packages it never needs '
                              'the default list copied')
@@ -1262,20 +1297,13 @@ def main(argv=None):
                            'Host runners pass it to build.sh --copr; the '
                            'testing-farm runner emits it as the guest '
                            'FREEIPA_COPR_REPOS request variable.')
-    qrun.add_argument('--ipa-from-copr', action='store_true',
-                      help='install the IPA packages from the enabled '
-                           'COPR repos (--copr) instead of building them '
-                           'from an SRPM (build.sh --ipa-from-copr); '
-                           'requires at least one --copr. Host runners bake '
-                           'the channel images from COPR; the testing-farm '
-                           'runner emits FREEIPA_IPA_FROM_COPR for the guest')
+    add_ipa_from(qrun)
     qrun.add_argument('--ipa-packages', default=None, metavar='SPECS',
                       help='space-separated dnf specs to install in '
-                           '--ipa-from-copr mode (default: '
-                          'all IPA subpackages -- the full server '
-                          'incl. freeipa-server-dns, the client, the '
-                          'python3-* bits and python3-ipatests -- '
-                          'resolved from the COPR repos)')
+                           '--ipa-from-copr/--ipa-from-distro mode '
+                           '(default: all IPA subpackages -- the full '
+                           'server incl. freeipa-server-dns, the client, '
+                           'the python3-* bits and python3-ipatests)')
     qrun.add_argument('--image-timeout', type=int, default=9000,
                       help='per-channel-image remote build timeout in '
                            'seconds (default 9000 = 2.5h)')
@@ -1284,7 +1312,8 @@ def main(argv=None):
                       help='FreeIPA checkout under test; --tf-repo-url and '
                            '--tf-ref default to its origin remote and '
                            'branch (this ci-freeipa checkout is never the '
-                           'repo under test)')
+                           'repo under test, except with --ipa-from-distro, '
+                           'where it is the default and nothing is built)')
     qrun.add_argument('--tf-token', default=None,
                       help='Testing Farm API token (default: env '
                            'TESTING_FARM_API_TOKEN)')
@@ -1302,10 +1331,11 @@ def main(argv=None):
                       help='TF guest architecture (default x86_64)')
     qrun.add_argument('--tf-compose', default='Fedora-44',
                       help='TF guest OS compose (default Fedora-44)')
-    qrun.add_argument('--tf-plan', default='/ci/tmt/plans/freeipa-env',
-                      help='tmt plan (node) name in the FreeIPA repo under '
-                           'test; it pins this repo (default '
-                           '/ci/tmt/plans/freeipa-env)')
+    qrun.add_argument('--tf-plan', default=None,
+                      help='tmt plan (node) name (default '
+                           '/ci/tmt/plans/freeipa-env in the FreeIPA repo '
+                           'under test, which pins this repo; with '
+                           '--ipa-from-distro /tmt/plans/distro in this one)')
     qrun.add_argument('--tf-variable', action='append', default=[],
                       metavar='KEY=VALUE',
                       help='extra environment variable for the TF guest '
