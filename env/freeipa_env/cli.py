@@ -27,8 +27,15 @@ CONTAINER_LOGSDIR = '/root/ipa-env/logs'
 CONFIG_IN_CONTAINER = '/root/.ipa/ipa-test-config.yaml'
 
 
+def state_home():
+    return (os.environ.get('XDG_STATE_HOME')
+            or os.path.join(os.path.expanduser('~'), '.local', 'state'))
+
+
 def default_workdir(spec):
-    return os.path.join(os.getcwd(), f'{spec.name}.env')
+    """Per-user state, not the current directory: logs and keys of an
+    environment must not land in whichever repository `up` ran from."""
+    return os.path.join(state_home(), 'freeipa-env', spec.name)
 
 
 def load_spec(path):
@@ -683,7 +690,9 @@ def main(argv=None):
     def add_common(sp):
         sp.add_argument('env', help='env.yaml (or preset) path')
         sp.add_argument('--workdir', default=None,
-                        help='state/logs dir (default ./<env-name>.env)')
+                        help='state/logs dir (default '
+                             '$XDG_STATE_HOME/freeipa-env/<env-name>, '
+                             'i.e. ~/.local/state/freeipa-env/<env-name>)')
         sp.add_argument('--ssh-key', default=None,
                         help='external provider: private key for root SSH '
                              '(default: ~/.ssh/id_rsa)')
@@ -752,7 +761,8 @@ def main(argv=None):
     sp.add_argument('env', nargs='?', default=None,
                     help='env.yaml (or preset) path')
     sp.add_argument('--workdir', default=None,
-                    help='state/logs dir to analyze (default ./<env-name>.env)')
+                    help='state/logs dir to analyze (default '
+                         '$XDG_STATE_HOME/freeipa-env/<env-name>)')
     sp.add_argument('--ssh-key', default=None,
                     help='external provider: private key for root SSH '
                          '(default: ~/.ssh/id_rsa); used with --refresh')
