@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import sys
+import time
 
 from .envspec import EnvSpec, EnvSpecError, RunSpec
 from .podman_provider import PodmanProvider, PodmanError
@@ -19,6 +20,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
                          DEFAULT_LINES, DEFAULT_TAIL)
 from .htmlreport import render_html
+from . import summary as xsummary
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'scripts')
@@ -427,52 +429,159 @@ def cmd_tf_logs(args):
     return 0
 
 
+def _podman_only(prov, what):
+    if not isinstance(prov, PodmanProvider):
+        raise PodmanError(f'{what} needs the podman provider')
+
+
+def _require_up(prov):
+    """A run needs the master: say so, rather than fail inside podman."""
+    if isinstance(prov, PodmanProvider):
+        name = prov.spec.container_name(prov.spec.master)
+        state = prov._state(name)
+        if state != 'running':
+            raise PodmanError(f'{name} is {state}: run `up` for this env '
+                              f'file first')
+
+
+def _build_command(spec, run, prov):
+    """(shell command, environment) that runs the spec's tests in the master,
+    or (None, env) for an unknown mode."""
+    env = build_run_env(spec)
+    if run.mode == 'base':
+        prov.copy_to_controller(RUN_SCRIPT, '/root/run-base-tests.sh')
+        return 'bash /root/run-base-tests.sh', env
+    if run.mode != 'integration':
+        return None, env
+    argv = ['ipa-run-tests', '--logging-level=debug', '--verbose', '-ra',
+            '--with-xunit', f'--logfile-dir={CONTAINER_LOGSDIR}',
+            f'--html={CONTAINER_LOGSDIR}/report.html',
+            '--self-contained-html']
+    # --logfile-dir makes the framework collect its per-test log trees
+    # (one dir per test nodeid, with the per-host install/uninstall logs
+    # + journal) into /root/ipa-env/logs instead of a throwaway tempdir,
+    # so `down` collects them and the report's "Per-test logs" section has
+    # content. The framework creates the dir itself (os.makedirs), and the
+    # container's /root is writable (base mode's run-base-tests.sh writes
+    # to the same path), so no pre-creation is needed.
+    # --html/--self-contained-html (pytest-html) writes the in-container
+    # per-test captured stdout/stderr + traceback report to
+    # /root/ipa-env/logs/report.html; it rides the same /root/ipa-env cp
+    # as the per-test trees and is parsed by the report's Per-test logs
+    # section. pytest-html must be installed in the image (images/full).
+    for x in run.ignore:
+        argv += ['--ignore', x]
+    for x in run.deselect:
+        argv += ['--deselect', x]
+    argv += run.args
+    argv += run.tests
+    env['IPATEST_YAML_CONFIG'] = CONFIG_IN_CONTAINER
+    return shlex.join([a for a in argv if a]), env
+
+
+def _clear_stale_report(prov):
+    """A report left by an earlier run would be fetched and summarised as
+    this run's when this one writes none (e.g. a collection error)."""
+    prov._exec_rc(prov.spec.container_name(prov.spec.master),
+                  'rm -f /root/nosetests.xml '
+                  '/root/ipa-env/logs/nosetests.xml')
+    stale = os.path.join(prov.workdir, 'nosetests.xml')
+    if os.path.exists(stale):
+        os.remove(stale)
+
+
+def _print_summary(workdir, tail=6):
+    path = os.path.join(workdir, 'nosetests.xml')
+    if not os.path.exists(path):
+        return None
+    overlay = 0
+    try:
+        with open(os.path.join(workdir, 'overlay.json')) as f:
+            overlay = len(json.load(f))
+    except (OSError, ValueError):
+        pass
+    text, counts = xsummary.render(path, tail, overlay)
+    print(text)
+    return counts
+
+
+def _finish_run(prov, workdir, rc):
+    # pull the xunit report next to the workdir logs (podman only)
+    if isinstance(prov, PodmanProvider) and rc is not None:
+        _fetch_xunit(prov, workdir)
+        _print_summary(workdir)
+    print(f'== run finished with exit code {rc}')
+    return rc if rc is not None else 1
+
+
 def cmd_run(args):
     spec = load_spec(args.env)
     workdir = args.workdir or default_workdir(spec)
     prov = make_provider(spec, workdir, args)
     run = spec.run or RunSpec()
-    env = build_run_env(spec)
-
-    if run.mode == 'base':
-        prov.copy_to_controller(RUN_SCRIPT, '/root/run-base-tests.sh')
-        rc = prov.run_in_controller('bash /root/run-base-tests.sh',
-                                    env=env, log='run.log')
-    elif run.mode == 'integration':
-        argv = ['ipa-run-tests', '--logging-level=debug', '--verbose', '-ra',
-                '--with-xunit', f'--logfile-dir={CONTAINER_LOGSDIR}',
-                f'--html={CONTAINER_LOGSDIR}/report.html',
-                '--self-contained-html']
-        # --logfile-dir makes the framework collect its per-test log trees
-        # (one dir per test nodeid, with the per-host install/uninstall logs
-        # + journal) into /root/ipa-env/logs instead of a throwaway tempdir,
-        # so `down` collects them and the report's "Per-test logs" section has
-        # content. The framework creates the dir itself (os.makedirs), and the
-        # container's /root is writable (base mode's run-base-tests.sh writes
-        # to the same path), so no pre-creation is needed.
-        # --html/--self-contained-html (pytest-html) writes the in-container
-        # per-test captured stdout/stderr + traceback report to
-        # /root/ipa-env/logs/report.html; it rides the same /root/ipa-env cp
-        # as the per-test trees and is parsed by the report's Per-test logs
-        # section. pytest-html must be installed in the image (images/full).
-        for x in run.ignore:
-            argv += ['--ignore', x]
-        for x in run.deselect:
-            argv += ['--deselect', x]
-        argv += run.args
-        argv += run.tests
-        env['IPATEST_YAML_CONFIG'] = CONFIG_IN_CONTAINER
-        rc = prov.run_in_controller(shlex.join(
-            [a for a in argv if a]), env=env, log='run.log')
-    else:
+    if args.tests:
+        run.tests = list(args.tests)
+        spec.run = run
+    if args.detach:
+        _podman_only(prov, '--detach')
+    _require_up(prov)
+    cmd, env = _build_command(spec, run, prov)
+    if cmd is None:
         print(f'error: unknown run mode {run.mode!r}', file=sys.stderr)
         return 2
+    if isinstance(prov, PodmanProvider):
+        _clear_stale_report(prov)
+    if args.detach:
+        prov.start_detached(cmd, env)
+        print('== run started in the background: `status` follows it, '
+              '`wait` collects its result')
+        return 0
+    rc = prov.run_in_controller(cmd, env=env, log='run.log')
+    return _finish_run(prov, workdir, rc)
 
-    # pull the xunit report next to the workdir logs (podman only)
-    if isinstance(prov, PodmanProvider) and rc is not None:
-        _fetch_xunit(prov, workdir)
-    print(f'== run finished with exit code {rc}')
-    return rc if rc is not None else 1
+
+def cmd_status(args):
+    spec = load_spec(args.env)
+    prov = make_provider(spec, args.workdir or default_workdir(spec), args)
+    _podman_only(prov, 'status')
+    state, rc = prov.detached_state()
+    print(f'== detached run: {state}'
+          + (f' (exit code {rc})' if rc is not None else ''))
+    if state != 'none':
+        print(prov.detached_tail(args.lines), end='')
+    return 0 if state in ('running', 'finished') else 1
+
+
+def cmd_wait(args):
+    spec = load_spec(args.env)
+    workdir = args.workdir or default_workdir(spec)
+    prov = make_provider(spec, workdir, args)
+    _podman_only(prov, 'wait')
+    deadline = time.time() + args.timeout if args.timeout else None
+    while True:
+        state, rc = prov.detached_state()
+        if state == 'finished':
+            break
+        if state in ('none', 'lost'):
+            print(f'error: no detached run to wait for ({state})',
+                  file=sys.stderr)
+            return 1
+        if deadline and time.time() > deadline:
+            print('== still running')
+            return 3
+        time.sleep(args.interval)
+    prov.fetch_detached_log()
+    return _finish_run(prov, workdir, rc)
+
+
+def cmd_summary(args):
+    spec = load_spec(args.env)
+    workdir = args.workdir or default_workdir(spec)
+    if _print_summary(workdir, args.tail) is None:
+        print(f'error: no nosetests.xml in {workdir} (`run` or `wait` '
+              f'fetches it)', file=sys.stderr)
+        return 1
+    return 0
 
 
 def _fetch_xunit(prov, workdir):
@@ -786,7 +895,37 @@ def main(argv=None):
 
     sp = sub.add_parser('run', help='run the test workflow in the env')
     add_common(sp)
+    sp.add_argument('--tests', action='append', metavar='TEST',
+                    help='run these tests instead of the spec\'s run.tests '
+                         '(repeatable): a file or file::Class[::test]')
+    sp.add_argument('--detach', action='store_true',
+                    help='start the tests in the master and return; the run '
+                         'survives this command (`status`, `wait`)')
     sp.set_defaults(fn=cmd_run)
+
+    sp = sub.add_parser('status', help='state and output of a detached run')
+    add_common(sp)
+    sp.add_argument('--lines', type=int, default=20,
+                    help='output lines to show (default 20)')
+    sp.set_defaults(fn=cmd_status)
+
+    sp = sub.add_parser(
+        'wait', help='wait for a detached run, then fetch its report')
+    add_common(sp)
+    sp.add_argument('--timeout', type=int, default=0, metavar='SECONDS',
+                    help='give up waiting after this long (exit 3); the '
+                         'run itself keeps going. Default: wait for it')
+    sp.add_argument('--interval', type=int, default=15, metavar='SECONDS',
+                    help='seconds between checks (default 15)')
+    sp.set_defaults(fn=cmd_wait)
+
+    sp = sub.add_parser(
+        'summary', help='per-test results of the last run, with the cause '
+                        'of each failure')
+    add_common(sp)
+    sp.add_argument('--tail', type=int, default=6,
+                    help='cause lines per failed test (default 6)')
+    sp.set_defaults(fn=cmd_summary)
 
     sp = sub.add_parser(
         'logs',

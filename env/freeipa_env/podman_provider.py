@@ -26,6 +26,7 @@ from .image import channel_tag, is_channel
 # environments (or another project's podman network) never collide.
 AUTO_V4_SUBNET = '10.89.{}.0/24'
 AUTO_V6_SUBNET = '2001:db8:89:{:x}::/64'
+RUN_DIR = '/root/freeipa-env-run'
 CONFIG_PATH_IN_CONTAINER = '/root/.ipa/ipa-test-config.yaml'
 SSH_PRIVKEY_IN_CONTAINER = '/root/.ssh/id_rsa'
 SYSTEMD_TIMEOUT_S = 180
@@ -652,6 +653,60 @@ class PodmanProvider:
                 lf.write(line)
             rc = proc.wait()
         return rc
+
+    # ------------------------------------------------- detached test runs
+    def start_detached(self, cmd, env=None):
+        """Start `cmd` in the master and return at once. Its output goes to
+        RUN_DIR/out.log and its exit status to RUN_DIR/rc, which survive the
+        controller (a wrapper timeout, a closed terminal, a sleeping host)."""
+        cname = self.spec.container_name(self.spec.master)
+        state, _rc = self.detached_state()
+        if state == 'running':
+            raise PodmanError('a detached run is already in progress '
+                              '(see `status`)')
+        self._exec(cname, f'mkdir -p {RUN_DIR} && '
+                          f'rm -f {RUN_DIR}/rc {RUN_DIR}/pid {RUN_DIR}/out.log')
+        inner = (f'echo $$ > {RUN_DIR}/pid; '
+                 f'/bin/bash -euxc {shlex.quote(cmd)} '
+                 f'> {RUN_DIR}/out.log 2>&1; echo $? > {RUN_DIR}/rc')
+        args = ['exec', '-d', '-w', '/root']
+        for k, v in (env or {}).items():
+            args += ['-e', f'{k}={v}']
+        args += [cname, '/bin/bash', '-c', inner]
+        self._podman(args, echo=False)
+
+    def detached_state(self):
+        """('none'|'running'|'lost'|'finished', exit code or None)."""
+        cname = self.spec.container_name(self.spec.master)
+        rc, out = self._podman(
+            ['exec', cname, '/bin/bash', '-c',
+             f'if [ -e {RUN_DIR}/rc ]; then echo finished $(cat {RUN_DIR}/rc);'
+             f' elif [ -e {RUN_DIR}/pid ] && kill -0 $(cat {RUN_DIR}/pid)'
+             f' 2>/dev/null; then echo running;'
+             f' elif [ -e {RUN_DIR}/pid ]; then echo lost; else echo none; fi'],
+            check=False, echo=False)
+        if rc != 0:
+            return 'none', None
+        parts = out.split()
+        if parts and parts[0] == 'finished':
+            return 'finished', int(parts[1]) if len(parts) > 1 else None
+        return (parts[0] if parts else 'none'), None
+
+    def detached_tail(self, lines):
+        cname = self.spec.container_name(self.spec.master)
+        _rc, out = self._podman(
+            ['exec', cname, 'tail', '-n', str(lines), f'{RUN_DIR}/out.log'],
+            check=False, echo=False)
+        return out
+
+    def fetch_detached_log(self):
+        """Copy the detached run's output next to the other logs."""
+        cname = self.spec.container_name(self.spec.master)
+        os.makedirs(self.logdir, exist_ok=True)
+        self._podman(['cp', f'{cname}:{RUN_DIR}/out.log',
+                      os.path.join(self.logdir, 'run.log')],
+                     check=False, echo=False)
+
     # ------------------------------------------------------ diagnostics
     def _collect_journal_namespaces(self, h, name):
         """Daemons run in their own journal namespaces (ahdapa, akamu, ...):
