@@ -7,7 +7,7 @@ description: Run FreeIPA test suites against the FreeIPA packages a Fedora relea
 
 Use this when the request is to test FreeIPA "as in Fedora N", "the packages already in Fedora", or a base/gating suite against a release, and nothing has to be built. For a FreeIPA worktree or packages from a COPR repository use [ci-freeipa-worktree](../ci-freeipa-worktree/SKILL.md) instead. Read `README.md` ("Test the packages Fedora ships") before starting; the tools evolve.
 
-This is ci-freeipa's default lane: when no SRPM, RPM directory or COPR repository is named, the image bake runs `dnf install` of every IPA subpackage, including `python3-ipatests`, from the release's `fedora` and `updates` repositories. The tests therefore come from the same release as the packages. `updates-testing` is not enabled. `--ipa-from-distro` states the lane explicitly and refuses `--copr` and `--srpm`; if the request needs either, it is not this lane.
+This is ci-freeipa's default lane: when no SRPM, RPM directory or COPR repository is named, the image bake runs `dnf install` of every IPA subpackage, including `python3-ipatests`, from the release's `fedora` and `updates` repositories. The tests therefore come from the same release as the packages. `updates-testing` is not enabled. `--ipa-from-distro` states the lane explicitly and refuses `--copr` and `--srpm`. Adding `--copr OWNER/PROJECT` to any command here switches to the COPR's builds (same flow, also on Testing Farm); the result is then no longer the distribution's and `show` must print `source: copr`.
 
 ## 1. Scope
 

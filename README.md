@@ -555,6 +555,11 @@ To run that plan from another clone of this repository, name it with
 `--tf-repo-url`/`--tf-ref` and pass `--ipa-from-distro` explicitly (a bare
 `--tf-repo-url` means a FreeIPA repo to build).
 
+**Packages from a COPR repository.** Add `--copr OWNER/PROJECT` (repeatable)
+to the same command: the same plan runs, and the guest installs the IPA
+packages from the COPR and the distribution together, for its own release
+(the COPR must publish builds for that Fedora).
+
 ## Fedora dist-git lane (packaging PR CI)
 
 Fedora dist-git CI (Packit) runs a **Koji scratch build** for every dist-git
@@ -611,7 +616,8 @@ repo). Source precedence on the guest: `FREEIPA_SRPM_URL` > `KOJI_TASK_ID`
 ## Test the packages Fedora ships (the default)
 
 When no other source is named (no `--srpm`/`build.srpm`, no `--rpms`, no
-`--copr`) the image is baked from the distribution's own packages, to test
+`--copr`; `--copr` alone installs from that COPR, see the end of this
+section) the image is baked from the distribution's own packages, to test
 a Fedora release as released: `images/build.sh` runs `dnf -y install` of
 every IPA
 subpackage (the server with DNS and trust-ad, the client, the `python3-*`
@@ -654,8 +660,9 @@ list, `--ipa-packages 'SPECS'` replaces the list.
 - **Testing Farm** — `--runner testing-farm --tf-compose Fedora-N`; see
   **Testing Farm transport** above.
 
-Builds published in a COPR repository use the same bake with
-`--ipa-from-copr --copr OWNER/PROJECT` (repeatable): dnf then resolves the
+Builds published in a COPR repository use the same bake: add
+`--copr OWNER/PROJECT` (repeatable) to any of the commands above
+(`--ipa-from-copr` states it explicitly). dnf then resolves the
 IPA packages against the COPR and the distribution together.
 
 ## Build the IPA RPMs ourselves
@@ -724,9 +731,9 @@ Three entry points, one underlying command:
 untouched; only missing channels are built (a full IPA build + image bake
 can take a while). Force a rebuild with `build.force` in the env file,
 `freeipa-env ensure --build`, or by removing the channel image. Without an
-SRPM (`--srpm`, or a `build:` block on the env file) and without `--copr`,
-a missing channel image is baked from the distribution's packages instead
-(see above).
+SRPM (`--srpm`, or a `build:` block on the env file) a missing channel image
+is instead baked with dnf from the distribution's packages, or from the
+`--copr` repositories when any is given (see above).
 
 ## Preset validation (`check`)
 
