@@ -558,8 +558,29 @@ class PodmanProvider:
                       .get('IPAddress', '?'))
                 print(f'{name:20s} {self._state(name):20s} '
                       f'{ip} ({h.role})')
+                self._show_provenance(name, d)
             except (PodmanError, KeyError):
                 print(f'{name:20s} not found ({h.role})')
+
+    # packages whose exact build decides what a run actually tested
+    _PROVENANCE_PACKAGES = ('freeipa-server', 'freeipa-client',
+                            'python3-ipatests', 'kuipa', 'kuipa-server',
+                            'ahdapa', 'akamu', '389-ds-base', 'pki-server')
+
+    def _show_provenance(self, name, inspected):
+        """What the container holds: image labels and installed builds."""
+        labels = (inspected.get('Config') or {}).get('Labels') or {}
+        for k in sorted(k for k in labels if k.startswith('org.freeipa-ci.')):
+            print(f'    {k[len("org.freeipa-ci."):]}: {labels[k]}')
+        rc, out = self._podman(
+            ['exec', name, 'rpm', '-q', '--qf', '%{NAME}-%{VERSION}-%{RELEASE}\\n']
+            + list(self._PROVENANCE_PACKAGES), check=False, echo=False)
+        for line in out.splitlines():
+            if line and not line.startswith('package '):
+                print(f'    {line}')
+        if os.path.exists(self._overlay_record()):
+            print('    OVERLAY applied: not a packaged run '
+                  f'(see {self._overlay_record()})')
 
     # the daemon log set, identical to Azure CI's collect_logs()
     # (ipatests/azure/scripts/azure-run-base-tests.sh): dirsrv, httpd,
