@@ -415,6 +415,10 @@ VM and the whole validated podman flow runs there.
   **1 passed in 349s**) → `down` (inner down → logs + xunit fetched back
   locally → deprovisioned via the command backend → state cleared). Full
   nested lifecycle validated; host left clean (0 containers).
+- [x] J7: `qemu` backend (`vmbackend.py` `QemuBackend`): local qemu/KVM VMs on
+  the control node, no cloud API. qcow2 overlay + NoCloud seed, user-mode NAT
+  with a forwarded ssh port; ssh/rsync share `_ssh_command`, and ephemeral VMs
+  skip known_hosts. Preset `presets/nested-qemu.yaml`.
 
 ## K. Preset validation (`freeipa-env check`)
 

@@ -1,0 +1,24 @@
+# Nested provider on local qemu/KVM VMs (vm.backend: qemu).
+#
+# The control node boots the VM itself: no cloud API. `image` is a cloud
+# base image (e.g. Fedora-Cloud-Base-Generic-45-*.x86_64.qcow2); every VM
+# is a copy-on-write overlay on it. Needs /dev/kvm and qemu-system-x86_64,
+# qemu-img and genisoimage/mkisofs/xorriso on the control node.
+name: nested-qemu
+domain: ipa.test
+provider: nested
+image: freeipa-current
+inner: podman
+vm:
+  backend: qemu
+  count: 1
+  image: ~/.cache/freeipa-ci/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2
+  cpus: 4
+  memory: 8192
+  disk: 40G
+hosts:
+  - {role: master, name: master1}
+run:
+  mode: integration
+  tests:
+    - test_integration/test_simple_replication.py

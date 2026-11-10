@@ -13,18 +13,28 @@ Backends:
                     cloud-API integration point (wrap any cloud in 2 scripts).
   * ``openstack``-- a concrete real-API example (openstack CLI); the
                     template for any other cloud.
+  * ``qemu``     -- local VMs under qemu/KVM on the control node (qcow2
+                    overlay + cloud-init seed; ssh over a forwarded port).
 
 VMHandle is the currency between a backend and the nested provider: an ssh
 target (user@host[:port]) with an optional private key and free-form meta
 (the backend's own VM id, used for terminate).
 """
 
+import glob
 import json
+import os
 import shlex
+import shutil
+import signal
+import socket
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 
 class VMBackendError(Exception):
@@ -86,6 +96,9 @@ SSH_OPTS = [
 def _ssh_command(handle: VMHandle):
     """The ssh argv without the target; shared by ssh and rsync."""
     args = ['ssh'] + SSH_OPTS
+    if handle.meta.get('ephemeral_hostkey'):
+        # per-VM host keys on reused localhost ports: don't pin them
+        args += ['-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR']
     if handle.port and handle.port != 22:
         args += ['-p', str(handle.port)]
     if handle.key:
@@ -94,13 +107,7 @@ def _ssh_command(handle: VMHandle):
 
 
 def _ssh_prefix(handle: VMHandle):
-    args = ['ssh'] + SSH_OPTS
-    if handle.port and handle.port != 22:
-        args += ['-p', str(handle.port)]
-    if handle.key:
-        args += ['-i', handle.key]
-    args.append(handle.target)
-    return args
+    return _ssh_command(handle) + [handle.target]
 
 
 def ssh_run(handle: VMHandle, cmd: str, check: bool = False,
@@ -328,7 +335,6 @@ class OpenstackBackend(VMBackend):
         if not image or not flavor:
             raise VMBackendError('openstack backend: need `image` and '
                                  '`flavor`')
-        import uuid
         handles = []
         for i in range(count):
             name = f'freeipa-ci-{uuid.uuid4().hex[:10]}'
@@ -396,10 +402,343 @@ class OpenstackBackend(VMBackend):
         print(f'== openstack: deleted {name}')
 
 
+PRIVATE_PREFIX = '192.168.100'
+
+
+def _free_port(kind=socket.SOCK_STREAM) -> int:
+    with socket.socket(socket.AF_INET, kind) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+def _free_vnc_display() -> int:
+    """First VNC display n (TCP 5900+n) not already bound on loopback."""
+    for n in range(1, 200):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('127.0.0.1', 5900 + n))
+            except OSError:
+                continue
+            return n
+    raise VMBackendError('no free VNC display in 1..199')
+
+
+def _usb_id(s) -> tuple:
+    """'VVVV:PPPP' -> lowercase ('vvvv', 'pppp')."""
+    vid, _, pid = str(s).lower().partition(':')
+    try:
+        if len(vid) == len(pid) == 4 and int(vid + pid, 16) >= 0:
+            return vid, pid
+    except ValueError:
+        pass
+    raise VMBackendError(f'qemu backend: usb id {s!r} must be VVVV:PPPP (hex)')
+
+
+def _usb_devices() -> list:
+    """(vid, pid, busnum, devnum) for each USB device in sysfs."""
+    out = []
+    for d in glob.glob('/sys/bus/usb/devices/*'):
+        def rd(f):
+            with open(os.path.join(d, f)) as fh:
+                return fh.read().strip()
+        try:
+            out.append((rd('idVendor'), rd('idProduct'),
+                        int(rd('busnum')), int(rd('devnum'))))
+        except (OSError, ValueError):
+            pass  # interface entries have no idVendor
+    return out
+
+
+def _usb_assign(cfgs):
+    """Give each VM's `usb: [VVVV:PPPP]` entries a distinct host device (a
+    device goes to one VM only). Sets c['usb_devices'] = [(bus, dev)]."""
+    free = _usb_devices()
+    for c in cfgs:
+        c['usb_devices'] = []
+        for want in c.get('usb') or []:
+            vid, pid = _usb_id(want)
+            hit = next((d for d in free if d[0] == vid and d[1] == pid), None)
+            if hit is None:
+                raise VMBackendError(f'qemu backend: no free USB device {vid}:{pid} '
+                                     f'on this host')
+            free.remove(hit)
+            node = f'/dev/bus/usb/{hit[2]:03d}/{hit[3]:03d}'
+            if not os.access(node, os.R_OK | os.W_OK):
+                raise VMBackendError(f'qemu backend: USB {vid}:{pid} at {node} is '
+                                     f'not read/write for this user')
+            c['usb_devices'].append((hit[2], hit[3]))
+
+
+def _usb_args(c) -> list:
+    """xHCI controller plus usb-host devices for the VM's assigned devices."""
+    if not c.get('usb_devices'):
+        return []
+    args = ['-device', 'qemu-xhci,id=xhci']
+    for bus, dev in c['usb_devices']:
+        args += ['-device', f'usb-host,bus=xhci.0,hostbus={bus},hostaddr={dev}']
+    return args
+
+
+def _mac() -> str:
+    h = uuid.uuid4().hex[:6]
+    return '52:54:00:' + ':'.join(h[i:i + 2] for i in (0, 2, 4))
+
+
+def _qemu_pid(pidfile: str, vm_id: str) -> Optional[int]:
+    """The live qemu pid for this VM, or None. qemu carries ``-name <vm_id>``
+    on its cmdline, which guards against a recycled pid."""
+    try:
+        with open(pidfile) as f:
+            pid = int(f.read().strip())
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            cmd = f.read()
+    except (OSError, ValueError):
+        return None
+    return pid if vm_id.encode() in cmd else None
+
+
+def _stop_qemu(pid: int, grace: int = 30):
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.5)
+    os.kill(pid, signal.SIGKILL)
+
+
+class QemuBackend(VMBackend):
+    """Local VMs under qemu/KVM on the control node: no cloud API.
+
+    Each VM is a qcow2 overlay on a cloud base image, booted with KVM and
+    user-mode NAT networking. A cloud-init NoCloud seed authorizes the ssh
+    public key for root; ssh reaches the guest on a host port forwarded to
+    its port 22 on 127.0.0.1. Per-VM state lives in ``<state_dir>/<id>/``.
+
+    Config::
+
+        vm:
+          backend: qemu
+          image: ~/images/Fedora-Cloud-Base-Generic.x86_64.qcow2  # required
+          cpus: 4                       # default 4
+          memory: 8192                  # MiB, default 8192
+          disk: 40G                     # overlay virtual size, default 40G
+          ssh_key: ~/.ssh/id_ed25519    # default: every ~/.ssh/{id_ed25519,
+                                        #   id_ecdsa,id_rsa}.pub is authorized
+          state_dir: ~/.cache/freeipa-ci/qemu   # default
+          qemu: qemu-system-x86_64              # default
+          gpu: virgl                    # optional; virtio-gpu with host OpenGL
+          render_node: /dev/dri/renderD128   # default, for gpu: virgl
+          usb: [VVVV:PPPP]              # optional, per VM; host USB devices by
+                                        #   VVVV:PPPP, one entry per device
+          vms:                          # optional per-VM overrides, one per VM;
+                                        #   vm.count must equal len(vms)
+            - {name: master1, cpus: 8, memory: 16384}
+            - {name: client1, image: ~/images/other.qcow2, disk: 20G}
+
+    ``terminate`` kills the qemu process and removes the overlay and seed;
+    ``console.log`` is kept for triage.
+    """
+    name = 'qemu'
+
+    def _qemu(self):
+        return self.cfg.get('qemu', 'qemu-system-x86_64')
+
+    def _vm_cfgs(self, count):
+        """Per-VM settings: top-level config, overridden by vms[i] if given."""
+        base = {k: v for k, v in self.cfg.items() if k != 'vms'}
+        over = self.cfg.get('vms')
+        if over is None:
+            return [dict(base) for _ in range(count)]
+        if len(over) != count:
+            raise VMBackendError(f'qemu backend: vm.vms lists {len(over)} VM(s) '
+                                 f'but {count} requested; set vm.count to match')
+        return [{**base, **(o or {})} for o in over]
+
+    def _check_host(self, cfgs):
+        for c in cfgs:
+            image = c.get('image')
+            if not image:
+                raise VMBackendError('qemu backend: `vm.image` (cloud base image) '
+                                     'is required, per VM or top-level')
+            if not os.path.isfile(os.path.expanduser(image)):
+                raise VMBackendError(f'qemu backend: base image not found: {image}')
+        if not os.access('/dev/kvm', os.W_OK):
+            raise VMBackendError('qemu backend: /dev/kvm is not writable '
+                                 '(needs KVM and access to /dev/kvm)')
+        for tool in (self._qemu(), 'qemu-img'):
+            if not shutil.which(tool):
+                raise VMBackendError(f'qemu backend: {tool} not found')
+
+    def _pubkeys(self):
+        """(authorized public key texts, private key for ssh or None)."""
+        if self.cfg.get('ssh_key'):
+            key = os.path.expanduser(self.cfg['ssh_key'])
+            pubs = [key + '.pub']
+        else:
+            key = None
+            pubs = [os.path.expanduser(f'~/.ssh/{n}.pub')
+                    for n in ('id_ed25519', 'id_ecdsa', 'id_rsa')]
+        pubs = [p for p in pubs if os.path.isfile(p)]
+        if not pubs:
+            raise VMBackendError('qemu backend: no ssh public key to authorize '
+                                 '(set vm.ssh_key)')
+        key = key or pubs[0][:-len('.pub')]     # private half of the first authorized key
+        keys = []
+        for p in pubs:
+            with open(p) as f:
+                keys.append(f.read().strip())
+        return keys, key
+
+    def _run(self, cmd, cwd=None):
+        try:
+            proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=600)
+        except FileNotFoundError:
+            raise VMBackendError(f'qemu backend: {cmd[0]} not found')
+        out = proc.stdout.decode(errors='replace')
+        if proc.returncode:
+            raise VMBackendError(f'qemu backend: {shlex.join(cmd)} failed '
+                                 f'({proc.returncode}):\n{out[-2000:]}')
+
+    def _seed(self, vmdir, vm_id, keys, net):
+        tool = next((t for t in ('genisoimage', 'mkisofs', 'xorriso')
+                     if shutil.which(t)), None)
+        if not tool:
+            raise VMBackendError('qemu backend: need genisoimage, mkisofs or '
+                                 'xorriso to build the cloud-init seed')
+        user = {'disable_root': False,
+                'users': ['default',
+                          {'name': 'root', 'ssh_authorized_keys': keys}],
+                'write_files': [{'path': '/etc/hosts', 'append': True,
+                                 'content': ''.join(f"{h['ip']} {h['name']}\n"
+                                                    for h in net['hosts'])}]}
+        netcfg = {'version': 2, 'ethernets': {
+            'ssh': {'match': {'macaddress': net['mac_ssh']}, 'dhcp4': True},
+            'priv': {'match': {'macaddress': net['mac_priv']},
+                     'addresses': [f"{net['ip']}/24"]}}}
+        with open(os.path.join(vmdir, 'user-data'), 'w') as f:
+            f.write('#cloud-config\n' + yaml.safe_dump(user))
+        with open(os.path.join(vmdir, 'meta-data'), 'w') as f:
+            f.write(f"instance-id: {vm_id}\nlocal-hostname: {net['name']}\n")
+        with open(os.path.join(vmdir, 'network-config'), 'w') as f:
+            f.write(yaml.safe_dump(netcfg))
+        args = ['-output', 'seed.iso', '-volid', 'cidata', '-joliet', '-rock',
+                'user-data', 'meta-data', 'network-config']
+        if tool == 'xorriso':
+            args = ['-as', 'mkisofs'] + args
+        self._run([tool] + args, cwd=vmdir)
+
+    def _display_args(self, c, q):
+        """No display, or virtio-gpu with host OpenGL (virgl) rendered on
+        the control node's DRM render node via egl-headless. The guest screen
+        is also served over VNC + websocket on loopback (q['vnc_websocket'])."""
+        gpu = c.get('gpu')
+        if not gpu:
+            return ['-display', 'none']
+        if gpu != 'virgl':
+            raise VMBackendError(f'qemu backend: unknown gpu {gpu!r} '
+                                 f'(supported: virgl)')
+        node = os.path.expanduser(c.get('render_node', '/dev/dri/renderD128'))
+        if not os.access(node, os.R_OK | os.W_OK):
+            raise VMBackendError(f'qemu backend: gpu virgl needs read/write '
+                                 f'access to {node}')
+        disp = _free_vnc_display()
+        q['vnc_websocket'] = _free_port()
+        return ['-device', 'virtio-vga-gl',
+                '-display', f'egl-headless,rendernode={node}',
+                '-vnc', f'127.0.0.1:{disp},websocket={q["vnc_websocket"]}']
+
+    def _start(self, keys, key, net, seg, c):
+        vm_id = f'freeipa-ci-{uuid.uuid4().hex[:10]}'
+        vmdir = os.path.join(os.path.expanduser(
+            self.cfg.get('state_dir', '~/.cache/freeipa-ci/qemu')), vm_id)
+        os.makedirs(vmdir)
+        q = {'dir': vmdir, 'pidfile': os.path.join(vmdir, 'qemu.pid'),
+             'console': os.path.join(vmdir, 'console.log')}
+        disk = os.path.join(vmdir, 'disk.qcow2')
+        seed = os.path.join(vmdir, 'seed.iso')
+        port = _free_port()
+        try:
+            self._seed(vmdir, vm_id, keys, net)
+            self._run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'qcow2',
+                       '-b', os.path.expanduser(c['image']), disk,
+                       str(c.get('disk', '40G'))])
+            self._run([self._qemu(), '-name', vm_id,
+                       '-machine', 'q35,accel=kvm', '-cpu', 'host',
+                       '-smp', str(c.get('cpus', 4)),
+                       '-m', str(c.get('memory', 8192)),
+                       *self._display_args(c, q), *_usb_args(c), '-daemonize',
+                       '-pidfile', q['pidfile'],
+                       '-serial', f'file:{q["console"]}',
+                       '-drive', f'file={disk},if=virtio,format=qcow2',
+                       '-drive', f'file={seed},if=virtio,media=cdrom,readonly=on',
+                       # ssh NIC: NAT with a forwarded port on the control node
+                       '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22',
+                       '-device', f'virtio-net-pci,netdev=net0,mac={net["mac_ssh"]}',
+                       # private NIC: multicast socket segment shared by this run
+                       '-netdev', f'socket,id=priv,mcast=230.0.0.1:{seg}',
+                       '-device', f'virtio-net-pci,netdev=priv,mac={net["mac_priv"]}'])
+        except Exception:
+            shutil.rmtree(vmdir, ignore_errors=True)
+            raise
+        if 'vnc_websocket' in q:
+            print(f'== vm {vm_id}: VNC websocket 127.0.0.1:{q["vnc_websocket"]}')
+        return VMHandle(host='127.0.0.1', port=port, id=vm_id, key=key,
+                        meta={'ephemeral_hostkey': True, 'qemu': q,
+                              'private': net})
+
+    def provision(self, count=1):
+        cfgs = self._vm_cfgs(count)
+        self._check_host(cfgs)
+        _usb_assign(cfgs)
+        keys, key = self._pubkeys()
+        # one private L2 segment per call: runs on the same host stay isolated
+        seg = _free_port(socket.SOCK_DGRAM)
+        names = [c.get('name', f'vm{i + 1}') for i, c in enumerate(cfgs)]
+        if len(set(names)) != len(names):
+            raise VMBackendError(f'qemu backend: duplicate VM names: {names}')
+        nets = [{'name': n, 'ip': f'{PRIVATE_PREFIX}.{10 + i}',
+                 'mac_ssh': _mac(), 'mac_priv': _mac()}
+                for i, n in enumerate(names)]
+        for n in nets:
+            n['hosts'] = [{'name': m['name'], 'ip': m['ip']} for m in nets]
+        handles = []
+        try:
+            for net, c in zip(nets, cfgs):
+                handles.append(self._start(keys, key, net, seg, c))
+        except Exception:
+            for h in handles:
+                try:
+                    self.terminate(h)
+                except VMBackendError as e:
+                    print(f'== {e}')
+            raise
+        return handles
+
+    def terminate(self, handle):
+        q = handle.meta.get('qemu')
+        if not q:
+            raise VMBackendError(f'qemu backend: no qemu state for {handle.target}')
+        pid = _qemu_pid(q['pidfile'], handle.id)
+        if pid:
+            _stop_qemu(pid)
+        for f in ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid'):
+            try:
+                os.remove(os.path.join(q['dir'], f))
+            except FileNotFoundError:
+                pass
+        print(f'== vm {handle.target}: qemu {handle.id} stopped '
+              f'(console: {q["console"]})')
+
+
+
 BACKENDS = {
     'ssh': SshBackend,
     'command': CommandBackend,
     'openstack': OpenstackBackend,
+    'qemu': QemuBackend,
 }
 
 

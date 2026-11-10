@@ -150,7 +150,7 @@ provider: nested
 image: freeipa-current
 inner: podman              # inner provider (default podman)
 vm:
-  backend: command         # ssh | command | openstack
+  backend: command         # ssh | command | openstack | qemu
   count: 1                 # VMs to provision (podman inner uses the 1st)
   provision_cmd: examples/nested/get-vm.sh      # $1 = count; print user@host[:port] / line
   deprovision_cmd: examples/nested/drop-vm.sh   # $1 = vm id/target
@@ -171,6 +171,43 @@ run: {mode: integration, tests: [test_integration/test_simple_replication.py]}
 * `openstack` — a concrete real-API example on the `openstack` CLI
   (`server create`/`show`/`delete`, floating IPs); the template for any
   other cloud.
+* `qemu` — local VMs under qemu/KVM on the control node (no cloud API): a
+  qcow2 overlay on `vm.image` (a cloud base image, e.g. Fedora Cloud Base),
+  cloud-init seeds the control node's ssh key for root, ssh over a forwarded
+  localhost port. Each VM also gets a private NIC on `192.168.100.0/24`
+  (`vm1` = `.10`, `vm2` = `.11`, …) with peers in `/etc/hosts`, so VMs reach
+  each other by name. `vm.vms` overrides `name`, `image`, `cpus`, `memory`,
+  `disk` per VM; `vm.count` must equal its length. `terminate` kills the qemu
+  process and removes the overlay; `console.log` is kept under `vm.state_dir`.
+  Needs `/dev/kvm` and the host packages listed below.
+  `vm.gpu: virgl` gives a VM virtio-gpu with OpenGL rendered on the control
+  node's GPU (`vm.render_node`, default `/dev/dri/renderD128`, must be
+  read/write for the user). It needs the `qemu-device-display-virtio-gpu-gl`
+  and `qemu-ui-egl-headless` packages. Guest check: `EGL_PLATFORM=surfaceless
+  eglinfo` should report the `virtio_gpu` driver and a `virgl` renderer.
+  Each such VM also serves its screen as VNC + websocket on loopback; `up`
+  prints the port. View it in a browser with noVNC (`novnc` package): open
+  `vnc.html?host=127.0.0.1&port=<ws>`. From another machine, tunnel with
+  `ssh -L <ws>:127.0.0.1:<ws>`.
+
+  `vm.usb: [VVVV:PPPP, ...]` (per VM in `vm.vms[i]`) passes host USB devices to
+  that VM through qemu `usb-host` on an xHCI controller. Each entry claims one
+  free host device with that vendor:product id; a device goes to one VM only.
+  Attached at boot only: no hot-plug. The device disappears from the host while
+  the VM runs. The user must be able to read/write `/dev/bus/usb/BBB/DDD` for
+  the device, or `up` fails with that path; a udev rule is the usual fix.
+
+  **Host packages (qemu backend, Fedora).** Required:
+  ```
+  sudo dnf install qemu-system-x86-core qemu-img genisoimage rsync openssh-clients
+  ```
+  `genisoimage` may be replaced by `xorriso` or `mkisofs`. Add for `vm.gpu: virgl`:
+  ```
+  sudo dnf install qemu-device-display-virtio-gpu-gl qemu-ui-egl-headless virglrenderer
+  ```
+  Optional, to view the VM screen in a browser: `sudo dnf install novnc`.
+  Guest-side GL (`mesa-dri-drivers`, `egl-utils`) is installed inside the VM, not on the host.
+  The user must be able to read `/dev/kvm` and, for virgl, read/write `render_node`.
 
 **Lifecycle.** `up`: provision → wait for ssh → rsync the ci-freeipa tree + the
 inner spec to the VM → run the inner `freeipa-env up` there → save the VM
