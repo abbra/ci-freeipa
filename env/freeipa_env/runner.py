@@ -244,7 +244,8 @@ class LocalRunner(Runner):
     def build_channels(self, srpm, srpm_dir, channels, remote_ci,
                        image_timeout, log=None, copr=None, copr_ipa=False,
                        ipa_packages=None):
-        _build_channels_on(self, self._p(srpm), srpm_dir, channels,
+        _build_channels_on(self, self._p(srpm) if srpm else None,
+                           srpm_dir, channels,
                            remote_ci, image_timeout, log, copr,
                            copr_ipa=copr_ipa, ipa_packages=ipa_packages)
 
