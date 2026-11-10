@@ -28,7 +28,7 @@ import shlex
 
 import yaml
 
-from . import queue
+from . import guest_packages, queue
 from .envspec import EnvSpec
 from .external_provider import ExternalProvider
 from .vmbackend import (VMHandle, make_backend, rsync_from, rsync_to,
@@ -270,6 +270,11 @@ class NestedProvider:
             ext._ssh(h, f"hostnamectl set-hostname {h.name} && "
                         f"sed -i '/^{h.ip} /d' /etc/hosts && "
                         f"echo '{h.ip} {h.name} {short}' >> /etc/hosts")
+        pkgs = self._cfg('guest_packages') or []
+        if pkgs:
+            for h in ext.spec.hosts:
+                ext._ssh(h, guest_packages.install_cmd(pkgs), timeout=3600)
+            print(f'== guest packages installed on {count} VM(s): {pkgs}')
         ext.up()
         print(f'== nested environment {self.spec.name} is attached on '
               f'{count} VM(s)')

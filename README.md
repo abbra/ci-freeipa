@@ -209,6 +209,26 @@ run: {mode: integration, tests: [test_integration/test_simple_replication.py]}
   Guest-side GL (`mesa-dri-drivers`, `egl-utils`) is installed inside the VM, not on the host.
   The user must be able to read `/dev/kvm` and, for virgl, read/write `render_node`.
 
+  **Guest packages (VM).** Set `vm.guest_packages` in the nested spec. Entries are
+  set names or plain package names, installed with `dnf` on every VM before the
+  inner `up`:
+  - `gpu`: `mesa-dri-drivers`, `egl-utils` (for the virgl `eglinfo` check).
+  - `ipa-distro`: the FreeIPA server/client/python packages from the distro
+    (no COPR, no local build), plus `pytest-html==4.2.0` via pip.
+
+  ```yaml
+  vm:
+    guest_packages: [gpu, ipa-distro]
+    gpu: virgl
+  ```
+
+  Fedora installs straight from its repos. On CentOS Stream, RHEL, Rocky and
+  AlmaLinux the install first enables EPEL and CRB (`crb`, falling back to
+  `powertools`). Plain names work too, e.g. `guest_packages: [tmux]`.
+  Not verified on the EL clones; only Fedora 45 was tested.
+  The `up` step fails with the dnf output if a package name is wrong.
+  Guest desktop packages are not in any set yet.
+
 **Lifecycle.** `up`: provision → wait for ssh → rsync the ci-freeipa tree + the
 inner spec to the VM → run the inner `freeipa-env up` there → save the VM
 handles to `<workdir>/nested-state.json` (so a later `down` knows what to
