@@ -249,6 +249,32 @@ writes the inner external spec, and attaches through `ExternalProvider` from the
 control node. `run` and `show` use the same provider. No ci-tree bootstrap runs
 on the VMs. Example: `env/presets/nested-qemu-external.yaml`.
 
+**bootc VMs.** For a bootc host, set `vm.bootc: true`. `up` then runs
+`bootc usroverlay` on each VM before `guest_packages`, so dnf can install into
+`/usr`. The overlay is discarded on reboot; a rebooted VM needs `up` again.
+Example: `env/presets/nested-qemu-bootc.yaml` (`guest_packages: [ipa-distro]`,
+one `master1` VM, FreeIPA runs directly on it, no containers).
+
+The base disk is not built by ci-freeipa. It was built with these steps, run
+inside a guest VM because the conversion needs root:
+
+```sh
+podman pull quay.io/fedora/fedora-bootc:44
+truncate -s 20G /root/output/disk.raw
+podman run --rm --privileged --pid=host -v /dev:/dev \
+  -v /var/lib/containers:/var/lib/containers -v /root/output:/output \
+  --security-opt label=type:unconfined_t quay.io/fedora/fedora-bootc:44 \
+  bootc install to-disk --via-loopback --generic-image --filesystem ext4 \
+  --root-ssh-authorized-keys /output/authorized_keys /output/disk.raw
+qemu-img convert -O qcow2 /root/output/disk.raw /root/output/disk.qcow2
+```
+
+Copy the qcow2 to `~/.cache/freeipa-ci/bootc/fedora-bootc-44.qcow2`. Tested:
+the bootc VM boots, `usroverlay` and `dnf install` work, and `ipa-distro`
+installs (freeipa-server 4.13.4). Not tested: `ipa-server-install` on the bootc
+VM; FreeIPA is not supported on bootc server side yet, so this is the failure to
+investigate.
+
 The nested provider runs on the **control node** (a CI machine with the
 cloud API creds + ssh). A queue of `provider: nested` presets runs under the
 existing `freeipa-env queue` supervisor on a control-node `--runner`; each
