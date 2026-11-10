@@ -64,7 +64,8 @@
 #                     --ipa-from-copr, with no COPR repo, no SRPM and no
 #                     rpmbuild. For testing a Fedora release as released.
 #                     This is the DEFAULT when none of --rpms, --srpm and
-#                     --copr is given. Excludes all three: with a COPR
+#                     --copr is given (--copr alone means --ipa-from-copr).
+#                     Excludes all three: with a COPR
 #                     enabled dnf would prefer its builds and the image
 #                     would no longer be the distribution's.
 #   --ipa-packages SPECS
@@ -144,8 +145,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# No source named at all: the distribution's own packages.
-[[ -n "$IPA_FROM$RPMS$SRPM$COPR_REPOS" ]] || IPA_FROM=distro
+# No local source named: install with dnf, from the COPR repos when any is
+# given, else the distribution's own packages.
+if [[ -z "$IPA_FROM$RPMS$SRPM" ]]; then
+    IPA_FROM=distro
+    [[ -n "$COPR_REPOS" ]] && IPA_FROM=copr
+fi
 if [[ -n "$IPA_FROM" && ( -n "$RPMS" || -n "$SRPM" ) ]]; then
     echo "--ipa-from-$IPA_FROM is mutually exclusive with --rpms/--srpm" >&2
     exit 2
@@ -165,10 +170,6 @@ case "$IPA_FROM" in
     distro)
         [[ -z "$COPR_REPOS" ]] || {
             echo "--ipa-from-distro excludes --copr (use --ipa-from-copr)" >&2; exit 2; } ;;
-    *)
-        [[ -n "$RPMS" || -n "$SRPM" ]] || {
-            echo "--copr needs an IPA source: --ipa-from-copr, --srpm or --rpms" >&2
-            exit 2; } ;;
 esac
 command -v "$TOOL" >/dev/null || { echo "$TOOL not found" >&2; exit 2; }
 
