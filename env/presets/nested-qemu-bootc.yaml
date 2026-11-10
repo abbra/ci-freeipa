@@ -1,0 +1,25 @@
+# Nested provider on local qemu/KVM VMs booted from a bootc disk, inner
+# external: FreeIPA runs directly on each VM (no containers). `bootc: true`
+# makes the nested provider run `bootc usroverlay` before installing
+# guest_packages. The base disk is converted from
+# quay.io/fedora/fedora-bootc:44 with `bootc install to-disk --via-loopback
+# --generic-image` (run inside a guest VM).
+name: nested-qemu-bootc
+domain: ipa.test
+provider: nested
+inner: external
+vm:
+  backend: qemu
+  image: ~/.cache/freeipa-ci/bootc/fedora-bootc-44.qcow2
+  bootc: true
+  guest_packages: [ipa-distro]
+  cpus: 4
+  memory: 8192
+  disk: 30G
+  vms:
+    - {name: master1}
+hosts:
+  - {role: master, name: master1, vm: master1}
+run:
+  mode: integration
+  tests: [test_integration/test_kerberos_flags.py]
