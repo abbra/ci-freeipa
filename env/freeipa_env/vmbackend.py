@@ -83,6 +83,16 @@ SSH_OPTS = [
 ]
 
 
+def _ssh_command(handle: VMHandle):
+    """The ssh argv without the target; shared by ssh and rsync."""
+    args = ['ssh'] + SSH_OPTS
+    if handle.port and handle.port != 22:
+        args += ['-p', str(handle.port)]
+    if handle.key:
+        args += ['-i', handle.key]
+    return args
+
+
 def _ssh_prefix(handle: VMHandle):
     args = ['ssh'] + SSH_OPTS
     if handle.port and handle.port != 22:
@@ -126,30 +136,20 @@ def ssh_run(handle: VMHandle, cmd: str, check: bool = False,
     return proc.returncode, out
 
 
+def _rsync(handle: VMHandle, src: str, dst: str):
+    ssh = shlex.join(_ssh_command(handle))
+    subprocess.run(['rsync', '-az', '--partial', '-e', ssh, src, dst],
+                   check=True)
+
+
 def rsync_to(handle: VMHandle, local: str, remote: str):
     """rsync local -> VM:remote (remote path need not pre-exist)."""
-    ssh = (f"ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-           f" -o BatchMode=yes")
-    if handle.port and handle.port != 22:
-        ssh += f" -p {handle.port}"
-    if handle.key:
-        ssh += f" -i {shlex.quote(handle.key)}"
-    cmd = ['rsync', '-az', '--partial', '-e', ssh, local,
-           f'{handle.target}:{remote}']
-    subprocess.run(cmd, check=True)
+    _rsync(handle, local, f'{handle.target}:{remote}')
 
 
 def rsync_from(handle: VMHandle, remote: str, local: str):
     """rsync VM:remote -> local."""
-    ssh = (f"ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-           f" -o BatchMode=yes")
-    if handle.port and handle.port != 22:
-        ssh += f" -p {handle.port}"
-    if handle.key:
-        ssh += f" -i {shlex.quote(handle.key)}"
-    cmd = ['rsync', '-az', '--partial', '-e', ssh,
-           f'{handle.target}:{remote}', local]
-    subprocess.run(cmd, check=True)
+    _rsync(handle, f'{handle.target}:{remote}', local)
 
 
 # ------------------------------------------------------------------- backends
