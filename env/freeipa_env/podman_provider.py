@@ -594,6 +594,7 @@ class PodmanProvider:
                           f'(container not running?)')
             except PodmanError:
                 pass
+            self._collect_journal_namespaces(h, name)
             # daemon logs: Azure-parity tarball
             self._exec_rc(name, self._DAEMON_LOG_TAR.format(n=h.name))
             if self._exec_rc(name, f'[ -s /tmp/{h.name}-logs.tar.gz ]') == 0:
@@ -651,6 +652,25 @@ class PodmanProvider:
                 lf.write(line)
             rc = proc.wait()
         return rc
+    # ------------------------------------------------------ diagnostics
+    def _collect_journal_namespaces(self, h, name):
+        """Daemons run in their own journal namespaces (ahdapa, akamu, ...):
+        `journalctl -b` does not show them, and they die with the container."""
+        rc, out = self._podman(
+            ['exec', name, '/bin/bash', '-c',
+             "ls -d /var/log/journal/*.* /run/log/journal/*.* 2>/dev/null "
+             "| sed -E 's/.*\\.//' | sort -u"],
+            check=False, echo=False)
+        for ns in out.split() if rc == 0 else []:
+            rc, jour = self._podman(
+                ['exec', name, 'journalctl', '--namespace', ns, '--no-pager'],
+                check=False, echo=False)
+            if rc == 0 and jour.strip():
+                path = os.path.join(
+                    self.logdir, f'collect-{h.name}.journal.{ns}.log')
+                with open(path, 'w') as lf:
+                    lf.write(jour if jour.endswith('\n') else jour + '\n')
+
     def check_forwarder(self):
         """Warn when the DNS forwarder does not answer: an install with DNS
         fails its forwarder check on a resolver that is only down for the
