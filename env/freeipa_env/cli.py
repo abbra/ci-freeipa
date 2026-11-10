@@ -600,6 +600,24 @@ def cmd_overlay(args):
     return 0
 
 
+def cmd_reset(args):
+    """Fresh containers on the same spec, the previous logs kept aside."""
+    spec = load_spec(args.env)
+    workdir = args.workdir or default_workdir(spec)
+    prov = make_provider(spec, workdir, args)
+    _podman_only(prov, 'reset')
+    prov.down()
+    if os.path.isdir(prov.logdir):
+        os.rename(prov.logdir,
+                  f'{prov.logdir}.{time.strftime("%Y%m%d-%H%M%S")}')
+    for stale in ('overlay.json', 'nosetests.xml'):
+        path = os.path.join(workdir, stale)
+        if os.path.exists(path):
+            os.remove(path)
+    prov.up()
+    return 0
+
+
 def _fetch_xunit(prov, workdir):
     try:
         # ipa-run-tests writes $PWD/nosetests.xml (PWD at invocation;
@@ -953,6 +971,12 @@ def main(argv=None):
     sp.add_argument('--mode', default=None, metavar='MODE',
                     help='chmod the copies, e.g. 755')
     sp.set_defaults(fn=cmd_overlay)
+
+    sp = sub.add_parser(
+        'reset', help='recreate the containers on the same spec, keeping '
+                      'the previous logs as logs.<timestamp>')
+    add_common(sp)
+    sp.set_defaults(fn=cmd_reset)
 
     sp = sub.add_parser(
         'logs',
