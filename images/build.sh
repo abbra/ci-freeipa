@@ -5,6 +5,7 @@
 #   images/build.sh --rpms /path/to/rpms --sha 962ac6d0e [options]
 #   images/build.sh --srpm /path/to/dist/srpms [options]
 #   images/build.sh --ipa-from-copr --copr owner/project [options]
+#   images/build.sh [--ipa-from-distro] [options]
 #
 # Options:
 #   --rpms DIR        Directory containing IPA dev-build RPMs (x86_64 +
@@ -57,9 +58,19 @@
 #                     freshness model is unchanged: the channel image is
 #                     only built if its tag is absent (the caller decides
 #                     whether to invoke build.sh at all).
+#   --ipa-from-distro Install the IPA packages the distribution itself ships
+#                     (the `fedora`/`updates` repos of --dist): the same
+#                     `dnf -y install <IPA packages>` bake as
+#                     --ipa-from-copr, with no COPR repo, no SRPM and no
+#                     rpmbuild. For testing a Fedora release as released.
+#                     This is the DEFAULT when none of --rpms, --srpm and
+#                     --copr is given. Excludes all three: with a COPR
+#                     enabled dnf would prefer its builds and the image
+#                     would no longer be the distribution's.
 #   --ipa-packages SPECS
-#                     Space-separated dnf specs to install in --ipa-from-copr
-#                     mode. The default is every IPA subpackage (the full
+#                     Space-separated dnf specs to install in
+#                     --ipa-from-copr/--ipa-from-distro mode. The default is
+#                     every IPA subpackage (the full
 #                     server incl. freeipa-server-dns -- the `run` lane
 #                     installs with --setup-dns -- plus the client, the
 #                     python3-* bits and python3-ipatests, the package the
@@ -67,6 +78,9 @@
 #                     and a bare `freeipa-server` would leave out e.g. the
 #                     integrated-DNS subpackage. Override to bake a narrower
 #                     image.
+#   --add-ipa-package SPEC
+#                     Extra dnf spec added to that default list (repeatable),
+#                     so the list never has to be copied.
 #   --tool TOOL       Container tool: podman (default) or docker.
 #
 # Example (validation host):
@@ -89,7 +103,7 @@ EXCLUDES+=('*debuginfo')
 EXCLUDES+=('*debugsource')
 PINS=
 COPR_REPOS=
-IPA_FROM_COPR=0
+IPA_FROM=    # copr | distro: install the IPA with dnf instead of local RPMs
 BUILDEP=0
 ADD_IPA_PACKAGES=
 # Every IPA subpackage (from freeipa.spec.in, minus the source-only
@@ -116,7 +130,11 @@ while [[ $# -gt 0 ]]; do
         --exclude) EXCLUDES+=("$2"); shift 2 ;;
         --pin) PINS="$2"; shift 2 ;;
         --copr) COPR_REPOS="${COPR_REPOS:+$COPR_REPOS }$2"; shift 2 ;;
-        --ipa-from-copr) IPA_FROM_COPR=1; shift ;;
+        --ipa-from-copr|--ipa-from-distro)
+            [[ -z "$IPA_FROM" || "$IPA_FROM" == "${1#--ipa-from-}" ]] || {
+                echo "--ipa-from-copr and --ipa-from-distro are mutually exclusive" >&2
+                exit 2; }
+            IPA_FROM="${1#--ipa-from-}"; shift ;;
         --builddep) BUILDEP=1; shift ;;
         --ipa-packages) IPA_PACKAGES="$2"; shift 2 ;;
         --add-ipa-package) ADD_IPA_PACKAGES="${ADD_IPA_PACKAGES:+$ADD_IPA_PACKAGES }$2"; shift 2 ;;
@@ -126,26 +144,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$IPA_FROM_COPR" == "1" && ( -n "$RPMS" || -n "$SRPM" ) ]]; then
-    echo "--ipa-from-copr is mutually exclusive with --rpms/--srpm" >&2
+# No source named at all: the distribution's own packages.
+[[ -n "$IPA_FROM$RPMS$SRPM$COPR_REPOS" ]] || IPA_FROM=distro
+if [[ -n "$IPA_FROM" && ( -n "$RPMS" || -n "$SRPM" ) ]]; then
+    echo "--ipa-from-$IPA_FROM is mutually exclusive with --rpms/--srpm" >&2
     exit 2
 fi
 if [[ -n "$RPMS" && -n "$SRPM" ]]; then
     echo "--rpms and --srpm are mutually exclusive" >&2; exit 2
 fi
-if [[ -n "$ADD_IPA_PACKAGES" && "$IPA_FROM_COPR" != "1" ]]; then
-    echo "--add-ipa-package only applies with --ipa-from-copr" >&2; exit 2
+if [[ -n "$ADD_IPA_PACKAGES" && -z "$IPA_FROM" ]]; then
+    echo "--add-ipa-package only applies with --ipa-from-copr/--ipa-from-distro" >&2; exit 2
 fi
 # Extra specs extend the default list, so a caller never has to copy it.
 [[ -n "$ADD_IPA_PACKAGES" ]] && IPA_PACKAGES="$IPA_PACKAGES $ADD_IPA_PACKAGES"
-if [[ "$IPA_FROM_COPR" == "1" ]]; then
-    [[ -n "$COPR_REPOS" ]] || {
-        echo "--ipa-from-copr requires at least one --copr repo" >&2; exit 2; }
-else
-    [[ -n "$RPMS" || -n "$SRPM" ]] || {
-        echo "--rpms or --srpm is required (or --ipa-from-copr with --copr)"
-        >&2; exit 2; }
-fi
+case "$IPA_FROM" in
+    copr)
+        [[ -n "$COPR_REPOS" ]] || {
+            echo "--ipa-from-copr requires at least one --copr repo" >&2; exit 2; } ;;
+    distro)
+        [[ -z "$COPR_REPOS" ]] || {
+            echo "--ipa-from-distro excludes --copr (use --ipa-from-copr)" >&2; exit 2; } ;;
+    *)
+        [[ -n "$RPMS" || -n "$SRPM" ]] || {
+            echo "--copr needs an IPA source: --ipa-from-copr, --srpm or --rpms" >&2
+            exit 2; } ;;
+esac
 command -v "$TOOL" >/dev/null || { echo "$TOOL not found" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -286,13 +310,18 @@ if [[ -n "$SRPM" ]]; then
         exit 1; }
 fi
 
-# --- install IPA from COPR (no local RPMs / SRPM) ---------------------------
-# --ipa-from-copr: the full image installs the IPA packages from the enabled
-# COPR repos (the Dockerfile's IPA_DNF_SPECS branch), so there is nothing to
+# --- install IPA with dnf (no local RPMs / SRPM) ----------------------------
+# --ipa-from-copr / --ipa-from-distro: the full image installs the IPA
+# packages with dnf (the Dockerfile's IPA_DNF_SPECS branch) from the enabled
+# COPR repos or from the distribution's own, so there is nothing to
 # select or build locally. Provide an empty rpms/ so the Dockerfile's
 # `COPY rpms/` still has a source; the install branch ignores its contents.
-if [[ "$IPA_FROM_COPR" == "1" ]]; then
-    echo "==> Installing IPA from COPR repos: $COPR_REPOS"
+if [[ -n "$IPA_FROM" ]]; then
+    if [[ "$IPA_FROM" == copr ]]; then
+        echo "==> Installing IPA from COPR repos: $COPR_REPOS"
+    else
+        echo "==> Installing IPA from the Fedora $DIST distribution repos"
+    fi
     echo "==> IPA dnf specs: $IPA_PACKAGES"
     mkdir -p "$WORK/rpms"
 fi
@@ -306,12 +335,12 @@ ARGS=(build -f "$WORK/Dockerfile" -t "$FULL_IMAGE" --build-arg "BASE=$BASE_IMAGE
 # Provenance of what `freeipa-env show` reports next to the installed builds.
 ARGS+=(--label "org.freeipa-ci.built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
        --label "org.freeipa-ci.dist=$DIST"
-       --label "org.freeipa-ci.source=$([[ "$IPA_FROM_COPR" == "1" ]] && echo copr || echo "${SRPM:+srpm}${RPMS:+rpms}")")
+       --label "org.freeipa-ci.source=${IPA_FROM:-${SRPM:+srpm}${RPMS:+rpms}}")
 [[ -n "$COPR_REPOS" ]] && ARGS+=(--label "org.freeipa-ci.copr=$COPR_REPOS")
-[[ "$IPA_FROM_COPR" == "1" ]] && ARGS+=(--label "org.freeipa-ci.ipa-packages=$IPA_PACKAGES")
+[[ -n "$IPA_FROM" ]] && ARGS+=(--label "org.freeipa-ci.ipa-packages=$IPA_PACKAGES")
 [[ -n "$PINS" ]] && ARGS+=(--build-arg "PIN_SPECS=$PINS")
 [[ -n "$COPR_REPOS" ]] && ARGS+=(--build-arg "COPR_REPOS=$COPR_REPOS")
-if [[ "$IPA_FROM_COPR" == "1" ]]; then
+if [[ -n "$IPA_FROM" ]]; then
     ARGS+=(--build-arg "IPA_DNF_SPECS=$IPA_PACKAGES")
 fi
 "$TOOL" "${ARGS[@]}"

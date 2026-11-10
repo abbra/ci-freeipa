@@ -32,11 +32,11 @@ ARG COPR_REPOS=
 ARG PIN_SPECS=
 
 # Space-separated dnf specs to install INSTEAD of the local IPA RPMs
-# (build.sh --ipa-from-copr: IPA itself comes from the enabled COPR repos,
-# so nothing is copied into /root/rpms and this branch installs the dnf
-# specs -- default every IPA subpackage (the full server incl.
-# freeipa-server-dns, the client, the python3-* bits and
-# python3-ipatests), set by build.sh --ipa-from-copr -- resolving against
+# (build.sh --ipa-from-copr / --ipa-from-distro: IPA itself comes from the
+# enabled COPR repos or from the distribution's own, so nothing is copied
+# into /root/rpms and this branch installs the dnf specs -- default every
+# IPA subpackage (the full server incl. freeipa-server-dns, the client, the
+# python3-* bits and python3-ipatests), set by build.sh -- resolving against
 # the enabled COPR + distro repos).
 ARG IPA_DNF_SPECS=
 
