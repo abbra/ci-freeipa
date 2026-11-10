@@ -12,6 +12,9 @@ design is documented in the freeipa repository as
 
 For agent-assisted investigation and testing of a current FreeIPA worktree,
 see [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
+To test the packages a Fedora release already ships, with no checkout, build
+or COPR repository, see **Test the packages Fedora ships** below and
+[ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md).
 
 ## Repository split
 
@@ -57,7 +60,7 @@ freeipa-env list                       environments on this host
 freeipa-env prune [--yes] [--workdirs] remove environments with nothing running
 freeipa-env report [ENV.YAML]  render a self-contained results.html from the artifacts
 freeipa-env resolve ENV.YAML   resolve image refs against the local store (read-only)
-freeipa-env ensure ENV.YAML    build the env's channel images from build.srpm, if missing
+freeipa-env ensure ENV.YAML    build the env's missing channel images (Fedora's packages, or build.srpm)
 freeipa-env migrate PRCI.YAML  generate presets from a PRCI definition
 freeipa-env queue run QUEUE.YAML --runner USER@HOST [...]   # run a queue
 freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          # PRCI-order queue
@@ -532,6 +535,26 @@ the request. `--dry-run` with a `testing-farm` runner prints the exact batch
 request JSON that would be submitted (a token is still required, but nothing
 is actually sent).
 
+**Released packages, no FreeIPA checkout (the default).** Without
+`--freeipa-src`, `--tf-repo-url`, `--srpm` and `--copr` the packages under
+test are the ones Fedora ships: nothing is built and no
+FreeIPA repo is involved, so the request names **this** repository and its
+own plan `/tmt/plans/distro` (`tmt/plans/distro.fmf`: `prepare` installs
+only `podman` and `python3-pyyaml`, the test comes from the same ref, so
+there is no pin to bump), at this
+checkout's origin and current branch, which must be pushed. The guest bakes
+the channel images for its own release, so the compose picks the Fedora
+under test:
+
+```
+freeipa-env queue run queues/azure.yaml \
+    --runner testing-farm --tf-compose Fedora-45
+```
+
+To run that plan from another clone of this repository, name it with
+`--tf-repo-url`/`--tf-ref` and pass `--ipa-from-distro` explicitly (a bare
+`--tf-repo-url` means a FreeIPA repo to build).
+
 ## Fedora dist-git lane (packaging PR CI)
 
 Fedora dist-git CI (Packit) runs a **Koji scratch build** for every dist-git
@@ -584,6 +607,56 @@ environment:
 The selected suites are whatever `FREEIPA_JOBS` lists (presets from this
 repo). Source precedence on the guest: `FREEIPA_SRPM_URL` > `KOJI_TASK_ID`
 (scratch-build reuse) > `FREEIPA_DISTGIT` > the upstream clone/SRPM build.
+
+## Test the packages Fedora ships (the default)
+
+When no other source is named (no `--srpm`/`build.srpm`, no `--rpms`, no
+`--copr`) the image is baked from the distribution's own packages, to test
+a Fedora release as released: `images/build.sh` runs `dnf -y install` of
+every IPA
+subpackage (the server with DNS and trust-ad, the client, the `python3-*`
+bits and `python3-ipatests`) against the repositories of `--dist` as the
+`fedora-toolbox` image enables them (`fedora` and `updates`, not
+`updates-testing`). The tests that run are the ones that release's
+`python3-ipatests` installs, so they always match the packages. The image
+carries the label `source: distro`; `freeipa-env show` prints it next to the
+installed builds. `--ipa-from-distro` states the choice explicitly and is
+refused together with `--copr` or `--srpm` (with a
+COPR enabled dnf would prefer its builds and the result would no longer be
+the distribution's).
+
+The image is a snapshot of the repositories at bake time: rebake to pick up
+newer updates. `--add-ipa-package SPEC` adds a package to the default
+list, `--ipa-packages 'SPECS'` replaces the list.
+
+- **Single machine, a dedicated image** — the safe choice on a host that
+  also holds a worktree or COPR build, because a channel image that is
+  already present is never rebuilt and `up` would then test that one:
+
+  ```
+  images/build.sh --dist 45 --tag freeipa-distro
+  ```
+
+  The env file names it directly, `image: freeipa-distro/full:45` with
+  `dist: 45`. To run a catalog preset against it, copy the preset and change
+  those two lines.
+
+- **Single machine, the channel image** — `freeipa-env up ENV.YAML` (or
+  `ensure`) bakes the env's missing channel image for the env's `dist:`;
+  `ensure --build` rebakes a present one, **replacing** whatever build the
+  channel tag held.
+
+- **Queue** — `freeipa-env queue run QUEUE --runner local` (or `USER@HOST`)
+  bakes the missing channel images on each runner before any job starts.
+  Host runners bake for dist 44; for another release bake the channel first
+  (`images/build.sh --dist N`).
+
+- **Testing Farm** — `--runner testing-farm --tf-compose Fedora-N`; see
+  **Testing Farm transport** above.
+
+Builds published in a COPR repository use the same bake with
+`--ipa-from-copr --copr OWNER/PROJECT` (repeatable): dnf then resolves the
+IPA packages against the COPR and the distribution together.
 
 ## Build the IPA RPMs ourselves
 
@@ -650,10 +723,10 @@ Three entry points, one underlying command:
 **Freshness model.** A channel image already present on the host is left
 untouched; only missing channels are built (a full IPA build + image bake
 can take a while). Force a rebuild with `build.force` in the env file,
-`freeipa-env ensure --build`, or by removing the channel image. A queue run
-without `--srpm` behaves exactly as before (delivered / `podman load`-ed
-images, no build), and an env file without a `build:` block is unaffected by
-`up` or `ensure`.
+`freeipa-env ensure --build`, or by removing the channel image. Without an
+SRPM (`--srpm`, or a `build:` block on the env file) and without `--copr`,
+a missing channel image is baked from the distribution's packages instead
+(see above).
 
 ## Preset validation (`check`)
 

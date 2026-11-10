@@ -70,7 +70,8 @@
 #   env/freeipa-env down presets/kuipa-install.yaml
 #
 # Re-bake after changing the freeipa tree: `freeipa-env ensure --build`
-# rebuilds the channel WITHOUT the COPR hook (no kuipa) — re-run step 1.
+# rebuilds the channel WITHOUT the COPR hook (no kuipa, Fedora's own
+# freeipa) — re-run step 1.
 # For a working tree (uncommitted files included), step 1 becomes
 # `bash scripts/make-srpms.sh ~/src/freeipa` then build.sh with
 # `--srpm ~/src/freeipa/dist/srpms --copr abbra/pqc --pin "kuipa kuipa-server"`.
