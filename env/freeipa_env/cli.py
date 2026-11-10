@@ -206,8 +206,7 @@ def cmd_ensure(args):
     ensured = prov.ensure_images(force=force)
     if not ensured:
         print('no channel images to build locally (the env names no '
-              'channel, the provider builds on the provisioned host, or '
-              '--copr was given without --ipa-from-copr or a build.srpm)')
+              'channel, or the provider builds on the provisioned host)')
         return 0
     for ref, (concrete, img_id) in ensured.items():
         print(f'{ref} {concrete} {img_id}')
@@ -764,12 +763,13 @@ def cmd_queue(args):
         print('error: no jobs left after filtering', file=sys.stderr)
         return 2
     q.jobs = jobs
-    # No source named: the packages the distribution ships. A testing-farm
+    # No source to build named: install with dnf, from the COPR repos when
+    # any is given, else the packages the distribution ships. A testing-farm
     # run that names a FreeIPA repo keeps building that repo on the guest.
-    if not (args.ipa_from or args.srpm or args.copr or (
+    if not (args.ipa_from or args.srpm or (
             any(s.strip() == 'testing-farm' for s in args.runner)
             and (args.freeipa_src or args.tf_repo_url))):
-        args.ipa_from = 'distro'
+        args.ipa_from = 'copr' if args.copr else 'distro'
     tf_cfg = _tf_config(args)
     if tf_cfg is None:
         return 2
@@ -901,7 +901,10 @@ def _tf_config(args):
     # checkout's origin and branch.
     src = getattr(args, 'freeipa_src', None)
     plan = getattr(args, 'tf_plan', None)
-    if getattr(args, 'ipa_from', None) == 'distro' and not src:
+    # (--ipa-from-copr with an explicit --tf-repo-url keeps that repo's plan)
+    ipa_from = getattr(args, 'ipa_from', None)
+    if not src and (ipa_from == 'distro' or (
+            ipa_from == 'copr' and not getattr(args, 'tf_repo_url', None))):
         from .runner import REPO_CI_DIR
         from .testingfarm import DISTRO_PLAN
         src = REPO_CI_DIR
@@ -978,7 +981,8 @@ def main(argv=None):
                             'The release is the env `dist:` (up/ensure), 44 '
                             'on a host runner, the guest compose on the '
                             'testing-farm runner. This is the default when '
-                            'no --copr, SRPM or FreeIPA repo is named')
+                            'no --copr, SRPM or FreeIPA repo is named; '
+                            '--copr alone means --ipa-from-copr')
 
     def add_common(sp):
         sp.add_argument('env', help='env.yaml (or preset) path')

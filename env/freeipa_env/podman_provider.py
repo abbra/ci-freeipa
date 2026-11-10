@@ -127,15 +127,12 @@ class PodmanProvider:
                 refs.add(ref)
         if not refs:
             return {}
-        # No SRPM on the spec and no COPR repo: the distribution's own
-        # packages (build.sh's default too). COPR repos without a source
-        # build nothing; resolve_images then raises its usual "build it"
-        # error for a missing channel.
+        # No SRPM on the spec: install with dnf (build.sh's default too),
+        # from the COPR repos when any is given, else the distribution's
+        # own packages.
         ipa_from = self.ipa_from
         if not ipa_from and not (self.spec.build or {}).get('srpm'):
-            if self.copr:
-                return {}
-            ipa_from = 'distro'
+            ipa_from = 'copr' if self.copr else 'distro'
         if force is None:
             force = bool((self.spec.build or {}).get('force', False))
         from .imagemake import ImageBuildError, ensure_channels
