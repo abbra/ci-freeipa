@@ -57,8 +57,9 @@ class PodmanProvider:
         else:
             lf = sys.stdout
         try:
-            lf.write(f'+ {shlex.join(cmd)}\n')
-            lf.flush()
+            if log or echo:
+                lf.write(f'+ {shlex.join(cmd)}\n')
+                lf.flush()
             proc = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 timeout=timeout, env={**os.environ, **(env or {})})
@@ -498,6 +499,7 @@ class PodmanProvider:
                 continue
             name = self.spec.container_name(h)
             try:
+                _rc, out = self._podman(['inspect', name], echo=False)
                 _rc, out = self._podman(['inspect', name])
                 import json
                 d = json.loads(out)[0]
