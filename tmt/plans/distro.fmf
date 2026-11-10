@@ -1,11 +1,13 @@
-summary: Test the IPA packages Fedora itself ships
+summary: Test packaged IPA, nothing built
 description: |
-    No FreeIPA checkout, no build and no COPR repo: the channel images are
-    baked with the IPA packages of the guest's own Fedora release
-    (FREEIPA_IPA_FROM_DISTRO, see tests/freeipa-env/tf-runner.sh), so the
-    compose of the request picks the release under test. The presets to run
-    come in FREEIPA_JOBS; `freeipa-env queue run QUEUE --runner testing-farm
-    --ipa-from-distro` submits this plan from this repository.
+    No FreeIPA checkout and no build: the channel images are baked with the
+    IPA packages of the guest's own Fedora release (FREEIPA_IPA_FROM_DISTRO,
+    see tests/freeipa-env/tf-runner.sh), so the compose of the request picks
+    the release under test. A request that sets FREEIPA_IPA_FROM_COPR and
+    FREEIPA_COPR_REPOS installs them from those COPR repos instead. The
+    presets to run come in FREEIPA_JOBS; `freeipa-env queue run QUEUE
+    --runner testing-farm [--copr OWNER/PROJECT]` submits this plan from
+    this repository.
 discover:
     how: fmf
     test: "^/tmt/tests/"

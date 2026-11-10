@@ -129,17 +129,19 @@ for _r in $COPR_REPOS; do COPR_ARGS+=(--copr "$_r"); done
 # download/build stage is skipped entirely and each channel image is baked
 # with `dnf -y install <IPA packages>`.
 #   FREEIPA_IPA_FROM_COPR    from the enabled COPR repos (build.sh
-#                            --ipa-from-copr);
+#                            --ipa-from-copr); wins over the next one, which
+#                            plans/distro sets as its default;
 #   FREEIPA_IPA_FROM_DISTRO  the packages the guest's own Fedora release
-#                            ships (build.sh --ipa-from-distro --dist <guest
-#                            dist>): the request's compose picks the release
-#                            under test, and no COPR repo is allowed.
+#                            ships (build.sh --ipa-from-distro); no COPR
+#                            repo is allowed.
+# Both bake for the guest's dist, so the request's compose picks the
+# release under test.
 # IPA_PACKAGES (optional) overrides the default dnf spec set (every IPA
 # subpackage -- the full server incl. freeipa-server-dns, the client, the
 # python3-* bits and python3-ipatests).
 IPA_FROM=""
-[ -n "${FREEIPA_IPA_FROM_COPR:-}" ] && IPA_FROM=copr
 [ -n "${FREEIPA_IPA_FROM_DISTRO:-}" ] && IPA_FROM=distro
+[ -n "${FREEIPA_IPA_FROM_COPR:-}" ] && IPA_FROM=copr
 IPA_PACKAGES="${FREEIPA_IPA_PACKAGES:-}"
 [ -n "$IPA_FROM" ] && echo "== IPA-from-$IPA_FROM mode: ${COPR_REPOS:-no COPR}${IPA_PACKAGES:+ ($IPA_PACKAGES)}"
 # KOJI_TASK_ID: set by Packit on Fedora dist-git CI test requests -- the
@@ -272,8 +274,8 @@ if [ -n "$MISSING" ]; then
         # dnf lanes: no SRPM download/build; bake each missing channel image
         # with the IPA installed from the enabled COPR repos, or (distro)
         # from the guest's own Fedora release.
-        DNF_ARGS=("--ipa-from-$IPA_FROM" ${COPR_ARGS[@]+"${COPR_ARGS[@]}"})
-        [ "$IPA_FROM" = distro ] && DNF_ARGS+=(--dist "$(guest_dist)")
+        DNF_ARGS=("--ipa-from-$IPA_FROM" ${COPR_ARGS[@]+"${COPR_ARGS[@]}"}
+                  --dist "$(guest_dist)")
         for c in $MISSING; do
             echo "== building channel $c image with IPA from $IPA_FROM"
             bash "$CI/images/build.sh" "${DNF_ARGS[@]}" --channel "$c" \
