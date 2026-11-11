@@ -26,6 +26,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
                          DEFAULT_LINES, DEFAULT_TAIL, ScanCache, cache_prefix)
 from .htmlreport import render_html
+from .mdreport import render_markdown
 from . import summary as xsummary
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -105,8 +106,13 @@ def cmd_report(args):
         print(f'error: no artifacts in {workdir} (run `up`/`run`/`down` '
               'first, or `tf-logs` to fetch a TF request)', file=sys.stderr)
         return 2
-    _emit_html(LogStore(workdir), args.out,
-               meta={'request_id': getattr(args, 'request_id', None)})
+    store = LogStore(workdir)
+    meta = {'request_id': getattr(args, 'request_id', None)}
+    if args.format == 'md':
+        out = args.out or os.path.join(store.logdir, 'results.md')
+        print(f'== wrote report: {render_markdown(store, out, meta)}')
+    else:
+        _emit_html(store, args.out, meta=meta)
     return 0
 
 
@@ -1437,8 +1443,11 @@ def main(argv=None):
     sp.add_argument('--workdir', default=None,
                     help='state/logs dir to render (default '
                          './<env-name>.env)')
+    sp.add_argument('--format', choices=('html', 'md'), default='html',
+                    help='html (default) or markdown')
     sp.add_argument('-o', '--out', default=None,
-                    help='output file (default <workdir>/logs/results.html)')
+                    help='output file (default <workdir>/logs/results.html '
+                         'or results.md)')
     sp.set_defaults(fn=cmd_report)
 
     sp = sub.add_parser(

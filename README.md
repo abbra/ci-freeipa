@@ -78,7 +78,7 @@ freeipa-env reset ENV.YAML            Create fresh containers from the same spec
 freeipa-env list                      List the environments on this host.
 freeipa-env vms [PATTERN] [--stop [--yes]] List running qemu VMs and who owns each; stop them.
 freeipa-env prune [--yes] [--workdirs] Remove the environments that have nothing running.
-freeipa-env report [ENV.YAML]         Make a self-contained results.html from the artifacts.
+freeipa-env report [ENV.YAML] [--format md]  Make a self-contained results.html (or a Markdown results.md) from the artifacts.
 freeipa-env resolve ENV.YAML          Find the image references in the local image store. Read only.
 freeipa-env ensure ENV.YAML           Build the missing channel images for the env. Use Fedora packages, or build.srpm.
 freeipa-env migrate PRCI.YAML         Make presets from a PRCI definition.
@@ -417,6 +417,8 @@ Useful options:
 
 `freeipa-env report` makes one file, `results.html`. The default location is `<workdir>/results.html`. Share this file or paste it into a ticket.
 
+`--format md` writes `results.md` instead: the same status, stages, tests (with the failure text) and matched log lines per category, as Markdown for a terminal, a PR or an issue. It has no per-test log blocks, and it shows at most 50 matched lines per file where the HTML shows 200. The default location is `<workdir>/logs/results.md`.
+
 The report uses the same code as `logs`. It works offline. It needs no environment file for a workdir that is already collected. It has no JavaScript and no external files. All CSS is inside the file. Sections collapse with the HTML `<details>` element.
 
 Each failed, errored, or skipped test row has its failure message and traceback tail.
@@ -424,6 +426,7 @@ Each failed, errored, or skipped test row has its failure message and traceback 
 ```
 freeipa-env report --workdir DIR                 # writes <workdir>/results.html
 freeipa-env report --workdir DIR -o /tmp/r.html  # choose the output file
+freeipa-env report --workdir DIR --format md     # writes <workdir>/logs/results.md
 freeipa-env logs ENV.YAML --html                 # the same report, from logs
 freeipa-env tf-logs <request-id> --html          # download a TF request, then make the report
 ```
