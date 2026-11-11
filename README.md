@@ -920,6 +920,16 @@ freeipa-env down env/generated/mixed-cds.yaml
 
 Check the result: `master1` must report `freeipa-server-*.fc44`, and `replica1` must report `freeipa-server-*.fc45`. The FreeIPA server build must match its release in both VMs. If not, the VM image is wrong.
 
+## Unit tests
+
+The Python tests for the infrastructure helpers live in `env/tests/`. They need no VMs or containers. Run them from `env/`:
+
+```
+python3 -m pytest tests -q
+```
+
+They cover the guest package list (`-name` subtraction, plain-name addition, duplicates) and the log analysis dedupe (`scan_file`, `LogStore.matched_lines`).
+
 ## Notes
 
 - The podman provider uses one network for each env: `10.89.0.0/24` and `2001:db8:1::/64`. Only one env can run on each host in version 1. If these defaults conflict with a podman network that another project made, set `subnet_v4:` and `subnet_v6:` in the preset.
