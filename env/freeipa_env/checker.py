@@ -41,11 +41,6 @@ def check_spec(spec):
             make_backend(spec.vm)
         except VMBackendError as e:
             errors.append(f'vm backend: {e}')
-        if spec.inner == 'external':
-            for h in spec.hosts:
-                if not h.vm:
-                    errors.append(f'host {h.name}: inner external needs vm: '
-                                  f'(the VM this host runs on)')
     elif spec.provider == 'podman':
         for h in spec.hosts:
             if h.is_external:

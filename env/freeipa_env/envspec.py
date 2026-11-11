@@ -54,7 +54,6 @@ class HostSpec:
     port: Optional[int] = None        # external: SSH port
     image: Optional[str] = None       # per-host image override
     os: Optional[str] = None          # e.g. windows (ad-image lane)
-    vm: Optional[str] = None          # nested/external: VM to place this host on
     ip: Optional[str] = None          # address peers use (default: address)
 
     @classmethod

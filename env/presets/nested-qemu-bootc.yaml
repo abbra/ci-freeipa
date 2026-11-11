@@ -14,12 +14,11 @@ vm:
   bootc: true
   guest_packages: [ipa-distro]
   cpus: 4
-  memory: 8192
   disk: 30G
   vms:
     - {name: master1}
 hosts:
-  - {role: master, name: master1, vm: master1}
+  - {role: master, name: master1}
 run:
   mode: integration
   tests: [test_integration/test_kerberos_flags.py]

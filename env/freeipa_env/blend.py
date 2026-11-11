@@ -5,8 +5,9 @@ The generated files are plain presets and queues, so the run is just
 `freeipa-env run env/generated/NAME.yaml` or
 `freeipa-env queue run env/generated/NAME.yaml --runner ...`.
 
-Merge rule: every top-level key of the provider setup replaces the base's
-key (provider, inner, vm, hosts, resources, ...), except `name` and `run`.
+Merge rule: the provider setup's top-level keys replace the base's keys
+(provider, inner, vm, image, dist, domain, ...), except `name`, `run`,
+`hosts` and `resources`, which always come from the base (the test).
 `run` comes from the base, with `tests` replaced by --tests when given.
 """
 
@@ -19,7 +20,7 @@ from .envspec import EnvSpec, EnvSpecError
 from .queue import ENVROOT, QueueSpec
 
 GENERATED = os.path.join(ENVROOT, 'generated')
-PROVIDER_SKIP = ('name', 'run')
+PROVIDER_SKIP = ('name', 'run', 'hosts', 'resources')
 
 
 def _doc(path):

@@ -1,5 +1,5 @@
 # Nested provider on local qemu/KVM VMs, inner external: each host runs on
-# its own VM (hosts[].vm names a vm.vms entry). Hosts reach each other over
+# its own VM, named after it (vm.vms entries override per-host settings). Hosts reach each other over
 # the private 192.168.100.0/24 network; the control node attaches over the
 # forwarded ssh ports. No containers inside the VMs.
 name: nested-qemu-external
@@ -10,14 +10,10 @@ vm:
   backend: qemu
   image: ~/.cache/freeipa-ci/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2
   cpus: 4
-  memory: 8192
   disk: 40G
-  vms:
-    - {name: master1}
-    - {name: client1, cpus: 2, memory: 4096}
 hosts:
-  - {role: master, name: master1, vm: master1}
-  - {role: client, name: client1, vm: client1}
+  - {role: master, name: master1}
+  - {role: client, name: client1}
 run:
   mode: integration
   tests: [test_integration/test_kerberos_flags.py]

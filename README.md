@@ -191,7 +191,7 @@ The backends are in `freeipa_env/vmbackend.py`.
 - Each VM is a qcow2 overlay on `vm.image`. Use a cloud base image, such as Fedora Cloud Base.
 - cloud-init adds the control node's SSH key for root. SSH uses a forwarded localhost port.
 - Each VM has a private NIC on `192.168.100.0/24`. `vm1` gets `.10`, `vm2` gets `.11`, and so on. The VMs have each other in `/etc/hosts`, so they can reach each other by name.
-- `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`.
+- `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`. With `inner: external`, `memory` comes from each host's `resources` entry instead, and a `memory` key in the vm block is an error.
 - `terminate` stops the qemu process and removes the overlay. The `console.log` file stays in `vm.state_dir`.
 - You need `/dev/kvm` and the host packages below.
 
@@ -280,12 +280,10 @@ vm:
 
 ### Inner provider: external
 
-With `inner: external`, nothing runs in containers. Each host runs directly on the VM that it names in `hosts[].vm`. For the qemu backend, the name is `vm.vms[].name`.
+With `inner: external`, nothing runs in containers. Each host runs directly on a VM named after the host. For the qemu backend, a `vm.vms` entry with the host's name sets that VM's `cpus` and other options.
 
 These rules apply:
 
-- Each host needs a `vm:` entry.
-- No VM can serve two hosts.
 - `vm.count` must equal the number of hosts.
 
 `up` does these steps:
@@ -866,7 +864,7 @@ Without an SRPM (`--srpm`, or a `build:` block), a missing channel image is made
 `freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a preset or queue that is ready to run. The file is `env/generated/NAME.yaml`. You then run it with `run` or `queue run`. You do not repeat any flags.
 
 - BASE is a preset or a queue (a file with `jobs:`). For a queue, each job is blended. Each one is written to `env/generated/NAME/<job>.yaml`.
-- PROVIDER is a setup file. It has keys such as `provider`, `inner`, `vm`, `hosts`, `resources`, `image`, `dist`, and `domain`. Its top-level keys replace the keys of BASE. Its `name` and `run` are ignored.
+- PROVIDER is a setup file. It has keys such as `provider`, `inner`, `vm`, `image`, `dist`, and `domain`. Its top-level keys replace the keys of BASE. `hosts` and `resources` always come from BASE, so the test's topology and memory stay. Its `name` and `run` are ignored.
 - `--tests` replaces `run.tests` in each generated preset.
 
 ```
@@ -886,7 +884,7 @@ With no arguments, it checks every `*.yaml` under `env/presets/`, and the top-le
 Each preset must parse as an `EnvSpec`. It must also pass the checks of its provider:
 
 - **`provider: podman`.** Each containerized host must find an image. A channel name must be a known channel: `freeipa-current`, `freeipa-next`, or `freeipa-previous`. A name that is neither a channel nor an image reference is reported as a likely typo.
-- **`provider: nested`.** The `vm:` block must use a known VM backend. `inner` must name a known provider. With `inner: external`, each host must have a `vm:`.
+- **`provider: nested`.** The `vm:` block must use a known VM backend. `inner` must name a known provider.
 - **`provider: external`.** Each host must have an address.
 
 `check` prints one line for each failing preset, then a summary. The exit code is 0 only when every preset is valid and no path is missing.

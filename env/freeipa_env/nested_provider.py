@@ -9,12 +9,15 @@ drives the inner provider there by re-invoking ``freeipa-env up/run/down
 <inner-spec> --workdir <remote>`` over ssh.  The whole validated podman
 flow runs unchanged — just on a VM acquired through the API.
 
-Inner provider ``external`` places each host on its own VM: the preset's
-``hosts[].vm`` names a configured VM (``vm.vms[].name``, or ``vm<N>``).  The
+Inner provider ``external`` places each host on its own VM, named after the
+host.  A ``vm.vms`` entry named after a host overrides that VM's settings (e.g.
+``cpus``).  The
 external provider attaches to every VM over its forwarded ssh port, and the
 hosts reach each other over the backend's private network (``ip``).  In
 this mode ``up``/``run``/``down`` run from the control node and nothing is
 shipped to the VMs.
+
+The qemu VM memory is each host's ``resources`` memory; a ``memory`` in the vm block is an error here.
 
 The nested provider runs on the *control node* (a CI machine that has the
 cloud API creds + ssh).  ``up`` provisions its own VM(s) and persists the
@@ -40,8 +43,8 @@ class NestedProvider:
         self.spec = spec
         self.workdir = workdir
         self.args = args
-        self.backend = make_backend(spec.vm)
         self.inner_type = (spec.inner or 'podman').strip()
+        self.backend = make_backend(self._vm_cfg())
         self.logdir = os.path.join(workdir, 'logs')
         self._state_path = os.path.join(workdir, 'nested-state.json')
         self._vms = []
@@ -49,6 +52,30 @@ class NestedProvider:
     # ------------------------------------------------------------- vm config
     def _cfg(self, key, default=None):
         return (self.spec.vm or {}).get(key, default)
+
+    def _vm_cfg(self):
+        """Backend config.  Inner external sizes each qemu VM from the memory
+        of its host's `resources` (the test requirement), so a `memory` in the
+        vm block would contradict it and is rejected."""
+        cfg = dict(self.spec.vm or {})
+        if self.inner_type != 'external' or cfg.get('backend') != 'qemu':
+            return cfg
+        over = {v.get('name'): dict(v) for v in cfg.get('vms') or []}
+        if 'memory' in cfg or any('memory' in v for v in over.values()):
+            raise NestedError(
+                "inner external sizes each VM from its host's resources; "
+                "remove `memory` from the vm block")
+        extra = sorted(str(n) for n in set(over) - {h.name for h in self.spec.hosts})
+        if extra:
+            raise NestedError(f'vm.vms {extra} match no host; a VM is named after its host')
+        vms = []
+        for h in self.spec.hosts:
+            mem = self.spec.resource(h.role)['memory']
+            if not mem.endswith('m'):
+                raise NestedError(f'host {h.name}: memory {mem!r} must be in MiB')
+            vms.append({**over.get(h.name, {}), 'name': h.name, 'memory': int(mem[:-1])})
+        cfg['vms'] = vms
+        return cfg
 
     def _remote_ci(self):
         return self._cfg('remote_ci', '~/freeipa-ci/ci')
@@ -135,21 +162,13 @@ class NestedProvider:
         return (vm.meta.get('private') or {}).get('ip') or vm.host
 
     def _place(self):
-        """host name -> index into self._vms, from each host's `vm:`."""
+        """host name -> index into self._vms: each host runs on the VM named after it."""
         names = [self._vm_name(v, i) for i, v in enumerate(self._vms)]
         place = {}
         for h in self.spec.hosts:
-            if not h.vm:
-                raise NestedError(
-                    f'host {h.name}: inner external needs `vm:` '
-                    f'(one of {names})')
-            if h.vm not in names:
-                raise NestedError(
-                    f'host {h.name}: unknown VM {h.vm!r} (configured: {names})')
-            idx = names.index(h.vm)
-            if idx in place.values():
-                raise NestedError(f'VM {h.vm!r} is given to more than one host')
-            place[h.name] = idx
+            if h.name not in names:
+                raise NestedError(f'host {h.name}: no VM named after it (VMs: {names})')
+            place[h.name] = names.index(h.name)
         return place
 
     def _external_doc(self, place):
@@ -160,7 +179,7 @@ class NestedProvider:
         hosts = []
         for raw in self.spec.raw['hosts']:
             vm = self._vms[place[raw['name']]]
-            h = {k: v for k, v in raw.items() if k != 'vm'}
+            h = dict(raw)
             h.update(name=f"{raw['name']}.{self.spec.domain}",
                      address=vm.host, port=vm.port, ip=self._vm_ip(vm))
             hosts.append(h)
