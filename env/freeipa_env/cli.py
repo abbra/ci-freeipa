@@ -13,7 +13,10 @@ import subprocess
 import sys
 import time
 
+import yaml
+
 from .envspec import EnvSpec, EnvSpecError, RunSpec
+from .queue import QueueSpec
 from .podman_provider import PodmanProvider, PodmanError
 from .external_provider import ExternalProvider, ExternalError
 from .vmbackend import VMBackendError
@@ -288,9 +291,43 @@ def _show_files(workdir, args):
     return 0
 
 
+def _is_queue(path):
+    try:
+        with open(path) as f:
+            return 'jobs' in (yaml.safe_load(f) or {})
+    except (OSError, yaml.YAMLError, AttributeError):
+        return False
+
+
+def _list_queue_jobs(path):
+    """Queue file given to `logs`: list the jobs that have a workdir (ran),
+    with their logs command; the rest are only counted."""
+    q = QueueSpec.from_file(path)
+    ran, not_run = 0, 0
+    print(f'queue {q.name}: {len(q.jobs)} jobs ({q.path})')
+    for job in q.jobs:
+        try:
+            spec = EnvSpec.from_file(job.path)
+        except (EnvSpecError, OSError):
+            not_run += 1
+            continue
+        wd = default_workdir(spec)
+        if not os.path.isdir(wd):
+            not_run += 1
+            continue
+        ran += 1
+        print(f'  {job.preset_rel}')
+        print(f'     logs: freeipa-env logs {job.path}')
+        print(f'     workdir: {wd}')
+    print(f'{ran} with logs, {not_run} without (not run or no env file)')
+    return 0
+
+
 def cmd_logs(args):
     workdir = args.workdir
     spec = None
+    if not workdir and args.env and _is_queue(args.env):
+        return _list_queue_jobs(args.env)
     if not workdir:
         if not args.env:
             print('error: give an env file (to derive the default workdir) '
