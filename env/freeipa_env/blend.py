@@ -37,6 +37,13 @@ def _blend_preset(base, provider, name, tests):
     doc = copy.deepcopy(base)
     doc.update(copy.deepcopy(
         {k: v for k, v in provider.items() if k not in PROVIDER_SKIP}))
+    # the test's channel names a podman image; a result that runs in VMs or on
+    # external hosts never reads it (unless the provider setup sets one)
+    if 'image' not in provider and (
+            doc.get('provider') == 'external'
+            or (doc.get('provider') == 'nested'
+                and doc.get('inner') == 'external')):
+        doc.pop('image', None)
     doc['name'] = name
     run = dict(base.get('run') or {})
     if tests:

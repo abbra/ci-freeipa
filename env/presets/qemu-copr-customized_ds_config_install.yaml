@@ -1,7 +1,6 @@
 provider: nested
 name: qemu-copr-customized_ds_config_install
 domain: ipa.test
-image: freeipa-current
 hosts:
 - role: master
   name: master1

@@ -944,6 +944,7 @@ Without an SRPM (`--srpm`, or a `build:` block), a missing channel image is made
 - BASE is a preset or a queue (a file with `jobs:`). For a queue, each job is blended. Each one is written to `env/generated/NAME/<job>.yaml`.
 - PROVIDER is a setup file. It has keys such as `provider`, `inner`, `vm`, `image`, `dist`, and `domain`. Its top-level keys replace the keys of BASE. `hosts` and `resources` always come from BASE, so the test's topology and memory stay. Its `name` and `run` are ignored.
 - `--tests` replaces `run.tests` in each generated preset.
+- The test's `image:` names a podman image. A result that runs in VMs (`nested` with `inner: external`) or on `external` hosts does not carry it, unless PROVIDER sets `image` itself. Such a result has no image to build or find.
 
 ```
 freeipa-env blend presets/base-xmlrpc.yaml presets/nested-qemu-external.yaml \
