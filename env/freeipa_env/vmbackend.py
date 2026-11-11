@@ -24,6 +24,7 @@ target (user@host[:port]) with an optional private key and free-form meta
 import glob
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -480,6 +481,32 @@ def _usb_args(c) -> list:
     return args
 
 
+def _size_bytes(text) -> int:
+    """A qemu size: bytes, or a number with K, M, G or T (powers of 1024)."""
+    m = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([KMGT]?)i?B?', str(text).strip(),
+                     re.IGNORECASE)
+    if not m:
+        raise VMBackendError(f'qemu backend: bad disk size {text!r}')
+    return int(float(m.group(1)) * 1024 ** ' KMGT'.index(m.group(2).upper() or ' '))
+
+
+def _check_disk(image: str, disk) -> None:
+    """An overlay smaller than its base image cuts the end of the image off
+    (its partition table and filesystem): the VM then fails to boot in ways
+    that look like a network problem. Refuse it."""
+    p = subprocess.run(['qemu-img', 'info', '--output=json', image],
+                       capture_output=True, text=True)
+    if p.returncode:
+        raise VMBackendError(f'qemu backend: qemu-img info {image} failed: '
+                             f'{p.stderr.strip()}')
+    virtual = json.loads(p.stdout)['virtual-size']
+    if _size_bytes(disk) < virtual:
+        raise VMBackendError(
+            f'qemu backend: vm.disk {disk} is smaller than the image '
+            f'{os.path.basename(image)} ({virtual / 2**30:g} GiB): the disk '
+            f'would be cut off. Use at least {virtual / 2**30:g}G.')
+
+
 def _mac() -> str:
     h = uuid.uuid4().hex[:6]
     return '52:54:00:' + ':'.join(h[i:i + 2] for i in (0, 2, 4))
@@ -577,6 +604,7 @@ class QemuBackend(VMBackend):
                                      'is required, per VM or top-level')
             if not os.path.isfile(os.path.expanduser(image)):
                 raise VMBackendError(f'qemu backend: base image not found: {image}')
+            _check_disk(os.path.expanduser(image), c.get('disk', '40G'))
         if not os.access('/dev/kvm', os.W_OK):
             raise VMBackendError('qemu backend: /dev/kvm is not writable '
                                  '(needs KVM and access to /dev/kvm)')

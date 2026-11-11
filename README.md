@@ -214,6 +214,7 @@ The backends are in `freeipa_env/vmbackend.py`.
 #### The qemu backend
 
 - Each VM is a qcow2 overlay on `vm.image`. Use a cloud base image, such as Fedora Cloud Base.
+- `vm.disk` (default `40G`) is the size of the overlay. It must be at least the image's virtual size: a smaller overlay cuts off the end of the image, and the VM then fails to boot in a way that looks like a network problem. `up` checks this with `qemu-img info` and refuses a smaller disk.
 - cloud-init adds the control node's SSH key for root. SSH uses a forwarded localhost port.
 - Each VM has a private NIC on `192.168.100.0/24`. `vm1` gets `.10`, `vm2` gets `.11`, and so on. The VMs have each other in `/etc/hosts`, so they can reach each other by name.
 - `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`. With `inner: external`, `memory` comes from each host's `resources` entry instead, and a `memory` key in the vm block is an error.
