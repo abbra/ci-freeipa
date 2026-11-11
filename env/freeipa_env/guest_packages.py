@@ -39,7 +39,9 @@ SETS = {
 
 # pip packages not shipped as RPMs on F45
 PIP = {'ipa-distro': ['pytest-html==4.2.0'],
-       'ipa-distro-el': ['pytest-html==4.2.0']}
+       # markupsafe: the el9 jinja2 imports soft_unicode, gone in 2.1
+       'ipa-distro-el': ['pytest-html==4.2.0', 'pytest-multihost',
+                         'pytest-sourceorder', 'markupsafe<2.1']}
 
 # EL clones need EPEL and CRB for some of the above; Fedora needs nothing
 EL_PREP = ('. /etc/os-release && case "$ID" in '
@@ -67,6 +69,13 @@ def install_cmd(names):
         q = shlex.quote(p)
         steps.append(f'python3 -m pip install {q} || '
                      f'python3 -m pip install --break-system-packages {q}')
+    if pip:
+        # pip keeps the user_tmp_t label of its build dir on the files it
+        # installs; httpd's WSGI (pkg_resources scans every installed
+        # distribution) is then denied by SELinux, and the IPA server's
+        # /ipa/json answers 500
+        steps.append('{ restorecon -R /usr/local/lib /usr/local/lib64 '
+                     '/usr/local/bin 2>/dev/null || true; }')
     return ' && '.join(steps)
 
 
