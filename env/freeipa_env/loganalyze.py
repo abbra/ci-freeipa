@@ -474,6 +474,21 @@ class LogStore:
                 out.append(f)
         return sorted(out)
 
+    def matched_lines(self, cat, pattern):
+        """(file, line) matches per host; an exact line is counted once per
+        host even when several per-test snapshots contain it."""
+        units = [None] if cat.console else self.hosts
+        out = []
+        for h in units:
+            seen = set()
+            for f in self.category_files(cat, h):
+                _t, m, _tl = scan_file(f, pattern)
+                for l in m:
+                    if l not in seen:
+                        seen.add(l)
+                        out.append((f, l))
+        return out
+
 
 # ---------------------------------------------------------------------------
 # file / report scanning
@@ -803,10 +818,8 @@ def render_list(store):
         elif cat.ptest:
             sources, matched = ptest_stats(store, cat)
         else:
-            for f in store.category_sources(cat):
-                sources += 1
-                _total, m, _t = scan_file(f, cat.match)
-                matched += len(m)
+            sources = len(store.category_sources(cat))
+            matched = len(store.matched_lines(cat, cat.match))
         print(f'{cat.name:10s} {sources:8d} {matched:8d}  {cat.desc}')
     print()
     print('retrieve: freeipa-env logs --category NAME [--pattern REX] '
@@ -844,9 +857,7 @@ def render_json(store):
                 'tests': len(store.ptest_tests()), 'desc': cat.desc}
             continue
         else:
-            for f in store.category_sources(cat):
-                _total, m, _t = scan_file(f, cat.match)
-                matched += len(m)
+            matched = len(store.matched_lines(cat, cat.match))
         data['categories'][cat.name] = {
             'sources': len(store.category_sources(cat)),
             'matched': matched, 'desc': cat.desc}
@@ -886,7 +897,7 @@ def _show_xunit(store, cat, args):
                     print(f'        {_clip(l)}')
 
 
-def _show_file(store, path, cat, args, root):
+def _show_file(store, path, cat, args, root, seen=None):
     try:
         rel = os.path.relpath(path, root)
     except ValueError:
@@ -905,8 +916,12 @@ def _show_file(store, path, cat, args, root):
     else:
         pattern = cat.match
     total, matched, tail = scan_file(path, pattern, tail_n=max(args.tail, 1))
+    if seen is not None:
+        fresh = [l for l in matched if l not in seen]
+        seen.update(matched)
+        matched = fresh
     if not matched:
-        print(f'  {rel}: no matching lines ({total} total)')
+        print(f'  {rel}: no new matching lines ({total} total)')
         return
     print(f'  {rel}: {len(matched)} matching lines (of {total})')
     shown, more = _clip_lines(matched, args.lines)
@@ -959,11 +974,12 @@ def _show_file_category(store, cat, args):
             print(f'host {h}: no sources')
             continue
         print(f'host: {h}')
+        seen = set()
         for f in files:
             roots = store.search_roots(cat, h)
             root = next((r for r in roots if f.startswith(r + os.sep)),
                         os.path.dirname(f))
-            _show_file(store, f, cat, args, root)
+            _show_file(store, f, cat, args, root, seen)
 
 
 def _ptest_rows(store):
