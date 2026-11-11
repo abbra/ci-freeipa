@@ -67,6 +67,7 @@ freeipa-env run  ENV.YAML    Run the test workflow: install, tests, uninstall.
 freeipa-env down ENV.YAML    Collect journal and logs, then remove the environment.
 freeipa-env show ENV.YAML    Show the state, image labels, and installed IPA, kuipa, ahdapa, and akamu builds.
 freeipa-env logs ENV.YAML    Sort and retrieve the collected logs.
+freeipa-env logs ENV.YAML --timing   Time per installer service and step, rated red/amber/green, with the oddities; stored in a SQLite database.
 freeipa-env logs ENV.YAML --test T --file NAME   Show the last lines of a collected file, for one test and host.
 freeipa-env run  ENV.YAML --tests X   Run these tests instead of the run.tests in the env file.
 freeipa-env run  ENV.YAML --detach    Start the tests and return. The run continues after this command ends.
@@ -415,6 +416,27 @@ Useful options:
 - `--refresh`: collect the logs again from an environment that still runs, before you analyze them. If the collection fails, the existing files are kept.
 
 `logs` extracts the daemon tarballs into `<workdir>/logs/extracted/<host>/`. It extracts only the needed files. It checks the mtime and size of each file. Repeated calls are fast.
+
+### Installer timing (`logs --timing`)
+
+`ipaserver/install/service.py` logs, for each service it configures, the estimate it prints (`Estimated time: 3 minutes`), every step (`[3/46]`), the time of every step (`step duration: dirsrv __create_instance 4.52 sec`) and, in newer versions, of the service (`service duration:`). `logs --timing` reads these lines from every installer log it finds (`ipaserver`, `ipareplica` and `ipaclient` install and uninstall logs, for each host and per-test snapshot) and prints, per installer run:
+
+- each service: its estimate, its actual time, the ratio, and a rating
+- the slowest steps (`--top N`, default 10)
+- the oddities: logged warnings and errors (identical ones counted once), steps that failed (`[error]`), retries and timeouts, stalls (no log line for `--gap` seconds, default 30), and a run that did not end
+
+The logs are appended to, so each `Logging to ...` line starts a new run. The framework keeps a snapshot of the same log per test; an invocation that appears in several files is reported once.
+
+The ratings are **G**reen, **A**mber and **R**ed. A service is green up to its estimate, amber up to 1.5 times it, red beyond; a service with no estimate is not rated. A step is amber from `--amber-step` seconds (default 10) and red from `--red-step` (default 60); where its service gave an estimate, those limits are raised to half and all of that estimate. A failed run is red. Warnings and errors count at most amber in a run that succeeded, and a stall is listed but not counted, since the step that stalled is already rated.
+
+Every run is also stored in a SQLite database, `<state dir>/freeipa-env/timing.sqlite` (`--db FILE` to choose, `--no-db` to skip). Tables: `runs` (environment, host, source, times, outcome, overall rating), `services`, `steps` and `oddities`, joined by `run_id`. Running it again on the same logs replaces the earlier rows, so the database holds one row per run. For example, the slowest steps of every environment:
+
+```
+sqlite3 ~/.local/state/freeipa-env/timing.sqlite \
+  "select env, host, service, method, sec from steps join runs on runs.id = run_id order by sec desc limit 10"
+```
+
+`--json` prints the same analysis as JSON. `--host` limits it to one host.
 
 ### Self-contained HTML report (`report`)
 

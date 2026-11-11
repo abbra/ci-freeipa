@@ -26,6 +26,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
                          DEFAULT_LINES, DEFAULT_TAIL, ScanCache, cache_prefix)
 from .htmlreport import render_html
+from . import installtiming
 from .mdreport import render_markdown
 from .detached import LocalDetached
 from . import summary as xsummary
@@ -394,6 +395,30 @@ def cmd_cache(args):
     return _cache_in(workdir, args)
 
 
+def _timing_report(store, workdir, args):
+    """`logs --timing`: rate the installer logs, print them, store them."""
+    infos = installtiming.analyze(
+        store, gap=args.gap, amber_step=args.amber_step,
+        red_step=args.red_step)
+    if args.host:
+        infos = [i for i in infos if i['host'] == args.host]
+    if not infos:
+        print('no installer logs (ipa*-install.log) in the collected logs',
+              file=sys.stderr)
+        return 1
+    if args.json:
+        print(installtiming.to_json(infos))
+    else:
+        print('\n\n'.join(installtiming.render(i, args.top) for i in infos))
+    if not args.no_db:
+        db = args.db or os.path.join(_state_dir(), 'timing.sqlite')
+        env = os.path.basename(os.path.normpath(workdir))
+        for info in infos:
+            installtiming.ingest(db, env, info)
+        print(f'== {len(infos)} run(s) stored in {db}', file=sys.stderr)
+    return 0
+
+
 def cmd_logs(args):
     workdir = args.workdir
     spec = None
@@ -432,6 +457,8 @@ def cmd_logs(args):
     else:
         args.pattern_compiled = None
     store = LogStore(workdir)
+    if args.timing:
+        return _timing_report(store, workdir, args)
     if args.html:
         _emit_html(store, args.html)
         return 0
@@ -1399,6 +1426,28 @@ def main(argv=None):
                     help='instead of the terminal view, write a '
                          'self-contained results.html and exit (default '
                          'output: <workdir>/logs/results.html)')
+    sp.add_argument('--timing', action='store_true',
+                    help='time spent in each installer service and step, '
+                         'rated red/amber/green, with the warnings, errors, '
+                         'stalls and retries found; stored in the timing '
+                         'database')
+    sp.add_argument('--db', default=None, metavar='FILE',
+                    help='timing database (default '
+                         '<state dir>/freeipa-env/timing.sqlite)')
+    sp.add_argument('--no-db', action='store_true',
+                    help='with --timing: do not write the database')
+    sp.add_argument('--top', type=int, default=10,
+                    help='with --timing: slowest steps shown (default 10)')
+    sp.add_argument('--gap', type=float, default=installtiming.GAP,
+                    help='with --timing: seconds without a log line that '
+                         'count as a stall (default %(default)s)')
+    sp.add_argument('--amber-step', type=float,
+                    default=installtiming.AMBER_STEP,
+                    help='with --timing: a step this slow is amber '
+                         '(default %(default)s s)')
+    sp.add_argument('--red-step', type=float, default=installtiming.RED_STEP,
+                    help='with --timing: a step this slow is red '
+                         '(default %(default)s s)')
     sp.set_defaults(fn=cmd_logs)
 
     spc = sub.add_parser(
