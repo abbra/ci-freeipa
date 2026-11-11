@@ -364,7 +364,7 @@ A queue of `provider: nested` presets runs under the `freeipa-env queue` supervi
 - Daemon categories (`ds`, `httpd`, `ca`, `kdc`, `samba`, `dns`, `ipa`, `system`) also read the per-test VM trees. Each test's uninstall removes the daemon logs from the VM, so the per-test copies are the only ones left.
 - Identical matching lines are reported once per host, keyed on the full line text, timestamp included. The summary counts and `--json` use the same rule. A repeated line shows as `no new matching lines`. `--all` dumps the unfiltered file and does not dedupe.
 - Given a queue file (`env/generated/<queue>.yaml`, with `jobs:`), `logs` lists its jobs. Each job shows the `logs` command and the workdir of its env file. Run `logs` on one of those env files.
-- Filtered scans are cached in `<workdir>/.scan-cache.sqlite`, keyed by file, pattern and size/mtime. A repeat `logs` run on an unchanged workdir takes well under a second. The first run after a new `run`/`down` rescans the changed files. Delete the file to force a full rescan.
+- Filtered scans are cached in `<workdir>/.scan-cache.sqlite`, keyed by file, pattern and size/mtime. A repeat `logs` run on an unchanged workdir takes well under a second. The first run after a new `run`/`down` rescans the changed files. `freeipa-env cache show ENV` lists the cache per category; `cache clear ENV --category NAME` (repeatable) or `--all` drops it. `--pattern` scans show as `custom:`.
 
 ```
 freeipa-env logs ENV.YAML                        # category summary
