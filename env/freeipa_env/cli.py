@@ -598,8 +598,12 @@ def _clear_stale_report(prov):
 
 
 def _print_summary(workdir, tail=6):
-    path = os.path.join(workdir, 'nosetests.xml')
-    if not os.path.exists(path):
+    """Summary of the xunit report(s) of a workdir, wherever `run` or `down`
+    left them (LogStore knows the places); None when there is none. A report
+    that is not the workdir's own nosetests.xml is announced by its path,
+    since `down` moves it under logs/collected/<host>/."""
+    paths = LogStore(workdir).xunit_paths() if os.path.isdir(workdir) else []
+    if not paths:
         return None
     overlay = 0
     try:
@@ -607,9 +611,16 @@ def _print_summary(workdir, tail=6):
             overlay = len(json.load(f))
     except (OSError, ValueError):
         pass
-    text, counts = xsummary.render(path, tail, overlay)
-    print(text)
-    return counts
+    total = {}
+    for path in paths:
+        if path != os.path.join(workdir, 'nosetests.xml'):
+            print(f'== results from {os.path.relpath(path, workdir)}')
+        text, counts = xsummary.render(path, tail, overlay)
+        overlay = 0
+        print(text)
+        for state, n in counts.items():
+            total[state] = total.get(state, 0) + n
+    return total
 
 
 def _finish_run(prov, workdir, rc):
@@ -713,8 +724,8 @@ def cmd_summary(args):
     spec = load_spec(args.env)
     workdir = args.workdir or default_workdir(spec)
     if _print_summary(workdir, args.tail) is None:
-        print(f'error: no nosetests.xml in {workdir} (`run` or `wait` '
-              f'fetches it)', file=sys.stderr)
+        print(f'error: no nosetests.xml in {workdir} or under its logs '
+              f'(`run`, `wait` or `down` leaves one)', file=sys.stderr)
         return 1
     return 0
 

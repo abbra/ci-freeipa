@@ -104,6 +104,7 @@ Use `run --detach` for long runs:
 
 - `status` shows the state and the last lines of output.
 - `wait` gets `nosetests.xml` and prints a summary for each test. It also gives the cause of each failure. Use `--timeout` to set a limit.
+- `summary` looks for `nosetests.xml` in the workdir, in its `logs`, and under `logs/collected/<host>/`, so it also works after `down`. It says which file it read when that is not the workdir's own.
 - `run --tests X` chooses tests without an edit to the env file.
 
 Several classes in one `run` share the containers. If an uninstall leaves state behind, the next class gets that state. That is a real result, not noise. For an independent result, use `reset`. It creates fresh containers and keeps the old logs as `logs.<timestamp>`.
