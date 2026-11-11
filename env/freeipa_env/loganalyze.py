@@ -945,12 +945,9 @@ def _show_file(store, path, cat, args, root, seen=None):
         rel = _rel(store, path)
     if args.all:
         total, matched, _t = scan_file(path, None)
-        shown, more = _clip_lines(matched)
         print(f'  {rel} ({total} lines)')
-        for l in shown:
+        for l in matched:
             print(f'    {l}')
-        if more:
-            print(f'    ... {more} more lines')
         return
     if args.pattern:
         pattern = args.pattern_compiled
