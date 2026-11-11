@@ -1,0 +1,22 @@
+# Nested provider on local qemu/KVM VMs, inner external, mixed images: the
+# master VM runs Fedora 44, every other host runs the default Fedora 45 image.
+# The hosts come from the test; vm.vms overrides the image of a VM named after
+# a host.
+name: nested-qemu-mixed
+domain: ipa.test
+provider: nested
+inner: external
+vm:
+  backend: qemu
+  image: ~/.cache/freeipa-ci/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2
+  cpus: 4
+  disk: 40G
+  guest_packages: [ipa-distro]
+  vms:
+    - {name: master1, image: ~/.cache/freeipa-ci/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2}
+hosts:
+  - {role: master, name: master1}
+  - {role: client, name: client1}
+run:
+  mode: integration
+  tests: [test_integration/test_kerberos_flags.py]
