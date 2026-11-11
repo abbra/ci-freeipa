@@ -49,3 +49,11 @@ def test_no_dnf_step_when_everything_is_removed():
 def test_duplicate_packages_are_installed_once():
     pkgs = dnf_pkgs(gp.install_cmd(['gpu', 'mesa-dri-drivers']))
     assert pkgs.count('mesa-dri-drivers') == 1
+
+
+def test_the_el_set_uses_ipa_names_and_keeps_the_pip_step():
+    cmd = gp.install_cmd(['ipa-distro-el'])
+    pkgs = dnf_pkgs(cmd)
+    assert 'ipa-server' in pkgs and 'python3-ipatests' in pkgs
+    assert not [p for p in pkgs if p.startswith('freeipa-')]
+    assert 'pytest-html==4.2.0' in cmd

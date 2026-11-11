@@ -1,6 +1,7 @@
 """Packages to install on nested VMs before the inner run.
 
-`vm.guest_packages` in a nested spec lists set names (`gpu`, `ipa-distro`)
+`vm.guest_packages` in a nested spec lists set names (`gpu`, `ipa-distro`,
+`ipa-distro-el`)
 and/or plain package names; a `-name` entry removes that set's (or
 package's) packages from the result. Works on Fedora, CentOS Stream, RHEL and the
 EL clones (dnf); EL hosts get EPEL and CRB enabled first.
@@ -22,10 +23,23 @@ SETS = {
         'python3-ipalib', 'python3-ipatests', 'python3-samba', 'sudo',
         'python3-pip',
     ],
+    # the same on CentOS Stream and RHEL clones, where FreeIPA is packaged as
+    # ipa-* (no freeipa-* names, no python-compat); checked on Stream 9 and 10
+    'ipa-distro-el': [
+        'ipa-server', 'ipa-server-common', 'ipa-server-dns',
+        'ipa-server-encrypted-dns', 'ipa-server-trust-ad',
+        'ipa-client', 'ipa-client-common', 'ipa-client-encrypted-dns',
+        'firewalld',
+        'ipa-client-samba', 'ipa-client-epn', 'ipa-common',
+        'ipa-selinux', 'ipa-selinux-nfast', 'ipa-selinux-luna',
+        'python3-ipaserver', 'python3-ipaclient', 'python3-ipalib',
+        'python3-ipatests', 'python3-samba', 'sudo', 'python3-pip',
+    ],
 }
 
 # pip packages not shipped as RPMs on F45
-PIP = {'ipa-distro': ['pytest-html==4.2.0']}
+PIP = {'ipa-distro': ['pytest-html==4.2.0'],
+       'ipa-distro-el': ['pytest-html==4.2.0']}
 
 # EL clones need EPEL and CRB for some of the above; Fedora needs nothing
 EL_PREP = ('. /etc/os-release && case "$ID" in '

@@ -285,6 +285,7 @@ Set `vm.guest_packages` in the nested spec. Each entry is a set name, a plain pa
 
 - `gpu`: installs `mesa-dri-drivers` and `egl-utils`. Use it for the virgl `eglinfo` check.
 - `ipa-distro`: installs the FreeIPA server, client, and Python packages from the distribution, plus `firewalld`, which the FreeIPA test suite expects. It does not use COPR or a local build. It also installs `pytest-html==4.2.0` with pip.
+- `ipa-distro-el`: the same for CentOS Stream and RHEL clones, where the packages are named `ipa-*` instead of `freeipa-*`. Checked against Stream 9 and 10.
 
 ```yaml
 vm:
