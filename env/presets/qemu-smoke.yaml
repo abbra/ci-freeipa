@@ -1,0 +1,22 @@
+# What the pull request check of this repository runs: one qemu VM from the
+# published Fedora 45 image (github.com/freeipa/ci-freeipa-vm-images) with the
+# distro FreeIPA packages, and ipatests' single-master install on it.
+# Needs /dev/kvm and podman: `freeipa-env up|run|down env/presets/qemu-smoke.yaml`.
+name: qemu-smoke
+domain: ipa.test
+provider: nested
+inner: external
+hosts:
+  - {role: master, name: master1}
+resources:
+  master: {memory: 3300m, memory-swap: 6600m}
+run:
+  mode: integration
+  tests:
+    - test_integration/test_installation.py::TestInstallMaster::test_install_master
+vm:
+  backend: qemu
+  image: containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest
+  cpus: 4
+  disk: 40G
+  guest_packages: [ipa-distro]
