@@ -5,7 +5,9 @@ description: |
     KVM: the request carries hardware.virtualization.is-supported (added
     by `freeipa-env queue run --runner testing-farm` when a job is a
     nested-qemu preset). tests/freeipa-env/qemu-prep.sh fetches the cloud
-    images the presets name. The IPA comes from the preset's own vm.copr and
+    images the presets name as files (an image named containerdisk:REF is
+    pulled from its registry with podman instead). The IPA comes from the
+    preset's own vm.copr and
     vm.guest_packages, so the request's compose only picks the guest OS the
     VMs run on, not the release under test.
 discover:
@@ -13,6 +15,6 @@ discover:
     test: "^/tmt/tests/"
 prepare:
     how: install
-    package: [qemu-system-x86-core, qemu-img, xorriso, rsync, openssh-clients, python3-pyyaml, curl]
+    package: [qemu-system-x86-core, qemu-img, xorriso, rsync, openssh-clients, python3-pyyaml, curl, podman]
 execute:
     how: tmt

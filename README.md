@@ -220,6 +220,22 @@ The backends are in `freeipa_env/vmbackend.py`.
 - `terminate` stops the qemu process and removes the overlay. The `console.log` file stays in `vm.state_dir`.
 - You need `/dev/kvm` and the host packages below.
 
+#### Disk images from a registry (`containerdisk:`)
+
+`vm.image` (also per VM in `vm.vms`) can be a file or `containerdisk:REF`. REF is a container image reference that podman can pull, such as `ghcr.io/OWNER/fedora-cloud-base:45-1.4`. The image is a *containerdisk*: a `FROM scratch` image that holds one file, `/disk/disk.qcow2`.
+
+```
+vm:
+  image: containerdisk:ghcr.io/OWNER/fedora-cloud-base:45-1.4
+```
+
+- `up` runs `podman pull`, copies the disk out with `podman create` and `podman cp`, and checks that it is a qcow2 file. It needs podman only: no root, no `bootc`, no conversion. This is the difference from the bootc disk above, which each guest would have to build.
+- The disk is cached in `~/.cache/freeipa-ci/images/containerdisk/`, named after the image id. A tag that moves is picked up on the next `up`. An unchanged image is not copied again.
+- `images/vm/publish.sh DISK.qcow2 REF [--push]` builds the image. It labels the image with the disk's SHA-256. Run `podman login` first; the script does not handle credentials. The Fedora cloud image that `qemu-prep.sh` downloads is the usual input.
+- On Testing Farm, `qemu-prep.sh` does not download an image named `containerdisk:`, and the qemu plan installs podman. A guest then pulls from your registry, not from `download.fedoraproject.org`.
+
+I tested it with a local image: `publish.sh` built a containerdisk from the Fedora 44 cloud image, and the qemu backend booted a VM from it in 17 s. I did not pull from a real registry, and I did not run it on Testing Farm.
+
 #### GPU: virgl
 
 Set `vm.gpu: virgl` to give a VM virtio-gpu with OpenGL. The control node's GPU renders the output.

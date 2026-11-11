@@ -25,14 +25,16 @@ if [ ! -e ~/.ssh/id_ed25519 ] && [ ! -e ~/.ssh/id_ecdsa ] \
     echo "== qemu-prep: generated ~/.ssh/id_ed25519"
 fi
 
-# every image the presets name: vm.image and each vm.vms[].image
+# every image file the presets name: vm.image and each vm.vms[].image. A
+# `containerdisk:` image is pulled from its registry at `up`, not here.
 IMAGES="$(python3 - "$@" <<'PY'
 import os, sys, yaml
 seen = []
 for path in sys.argv[1:]:
     vm = (yaml.safe_load(open(path)) or {}).get('vm') or {}
     for img in [vm.get('image')] + [v.get('image') for v in vm.get('vms') or []]:
-        if img and os.path.expanduser(img) not in seen:
+        if (img and not img.startswith('containerdisk:')
+                and os.path.expanduser(img) not in seen):
             seen.append(os.path.expanduser(img))
 print('\n'.join(seen))
 PY

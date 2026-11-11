@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from . import containerdisk
+
 
 class VMBackendError(Exception):
     pass
@@ -702,6 +704,15 @@ class QemuBackend(VMBackend):
 
     def provision(self, count=1):
         cfgs = self._vm_cfgs(count)
+        pulled = {}
+        for c in cfgs:
+            if c.get('image'):
+                try:
+                    if c['image'] not in pulled:
+                        pulled[c['image']] = containerdisk.resolve(c['image'])
+                except containerdisk.ContainerDiskError as e:
+                    raise VMBackendError(f'qemu backend: {e}')
+                c['image'] = pulled[c['image']]
         self._check_host(cfgs)
         _usb_assign(cfgs)
         keys, key = self._pubkeys()
