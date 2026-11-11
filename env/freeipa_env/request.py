@@ -138,11 +138,64 @@ def _step(verb, preset, workdir):
 IMAGE = 'registry.fedoraproject.org/fedora:latest'
 
 
-def run(request_file, src, workdir, image=IMAGE, dry_run=False):
+def _is_qemu(path):
+    with open(path) as f:
+        doc = yaml.safe_load(f) or {}
+    return (doc.get('provider') == 'nested'
+            and (doc.get('vm') or {}).get('backend') == 'qemu')
+
+
+def testing_farm(req, todo, workdir, src, repo_url, ref, dry_run):
+    """Submit the request to Testing Farm: `queue run --runner testing-farm`.
+
+    The guest clones the FreeIPA repository under test, builds it, and runs
+    the pinned plan of that repository, which finds the presets in the
+    ci-freeipa it pins. So only presets of ci-freeipa run there, with the
+    tests they name, built from the pushed commit; a qemu preset needs
+    another plan (/tmt/plans/qemu of ci-freeipa) and installs its IPA from
+    packages, so it is not accepted here.
+    """
+    if not req['build']:
+        raise RequestError('build: false is not supported on Testing Farm')
+    if not (repo_url and ref):
+        raise RequestError('Testing Farm needs --tf-repo-url and --tf-ref: '
+                           'the guest clones the commit under test')
+    for key, path, tests in todo:
+        if os.path.commonpath([path, queue.ENVROOT]) != queue.ENVROOT:
+            raise RequestError(
+                f'{key}: Testing Farm runs the presets of ci-freeipa; '
+                f'{path} is a file of the checkout')
+        if tests:
+            raise RequestError(f'{key}: `tests` is not supported on '
+                               f'Testing Farm')
+        if _is_qemu(path):
+            raise RequestError(f'{key}: a qemu preset does not run on this '
+                               f'plan; run it on the fork runner')
+    os.makedirs(workdir, exist_ok=True)
+    qfile = os.path.join(workdir, 'request-queue.yaml')
+    with open(qfile, 'w') as f:
+        yaml.safe_dump({'name': 'request', 'jobs': [
+            {'preset': os.path.relpath(path, queue.ENVROOT)}
+            for _k, path, _t in todo]}, f, sort_keys=False)
+    argv = [os.path.join(queue.ENVROOT, 'freeipa-env'), 'queue', 'run',
+            qfile, '--runner', 'testing-farm', '--freeipa-src', src,
+            '--tf-repo-url', repo_url, '--tf-ref', ref,
+            '--outdir', os.path.join(workdir, 'queue')]
+    if dry_run:
+        argv.append('--dry-run')
+    print('== ' + ' '.join(shlex.quote(a) for a in argv), flush=True)
+    return subprocess.run(argv).returncode
+
+
+def run(request_file, src, workdir, image=IMAGE, dry_run=False,
+        runner='local', tf_repo_url=None, tf_ref=None):
     """Run the request; the exit status is 0 when every preset passed"""
     src = os.path.abspath(src)
     req = load(request_file)
     todo = jobs(req, src)
+    if runner == 'testing-farm':
+        return testing_farm(req, todo, workdir, src, tf_repo_url, tf_ref,
+                            dry_run)
     if dry_run:
         for key, path, tests in todo:
             print(f'{key}: {path}' + (f' tests={tests}' if tests else ''))
@@ -179,7 +232,8 @@ def run(request_file, src, workdir, image=IMAGE, dry_run=False):
 def main_args(args):
     try:
         return run(args.request, args.freeipa_src, args.workdir,
-                   dry_run=args.dry_run)
+                   dry_run=args.dry_run, runner=args.runner,
+                   tf_repo_url=args.tf_repo_url, tf_ref=args.tf_ref)
     except RequestError as e:
         print(f'error: {e}', file=sys.stderr)
         return 2

@@ -81,6 +81,7 @@ freeipa-env request .ci-freeipa.yaml --freeipa-src ~/freeipa [--workdir DIR] [--
 - With `build: true` the command runs `make srpms` on the checkout in a Fedora container. The container installs the packages of the checkout's `ci/tmt/plans/freeipa-env.fmf`. Then each preset that does not name its own build gets that SRPM: `build.srpm` for a podman preset, `vm.srpms` for a nested one. An external preset tests its own IPA.
 - `tests` replaces `run.tests` of that preset.
 - The presets run one after the other: `up`, `run`, `summary`, `down`. The exit status is 0 when every preset passed. A table of the results goes to `$GITHUB_STEP_SUMMARY` when it is set.
+- `--runner testing-farm --tf-repo-url URL --tf-ref COMMIT` submits the request to Testing Farm instead (`queue run --runner testing-farm` with a queue made from the presets). It needs `TESTING_FARM_API_TOKEN` and a commit the guest can clone. Only presets of this repository that run in containers are accepted: a preset of the checkout, `tests`, `build: false`, and qemu presets are errors. `--dry-run` prints the request that would be sent. A dry run with a dummy token printed the right plan, repository, commit and `FREEIPA_JOBS`; I did not submit a real request.
 
 The FreeIPA tree has a workflow that runs this on a contributor's fork. See `doc/designs/ci_modernization.md` there. The tests of this repository cover the request file and the adaptation of the presets. A request with `qemu-smoke` and `build: false` passed on a local machine, and `make srpms` of a FreeIPA checkout ran in the container.
 

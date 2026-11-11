@@ -1623,6 +1623,15 @@ def main(argv=None):
                     help='where the presets, logs and state go')
     sp.add_argument('--dry-run', action='store_true',
                     help='print what would run and stop')
+    sp.add_argument('--runner', choices=('local', 'testing-farm'),
+                    default='local',
+                    help='local: run on this machine (default); '
+                         'testing-farm: submit to Testing Farm, which needs '
+                         'TESTING_FARM_API_TOKEN and a pushed commit')
+    sp.add_argument('--tf-repo-url', default=None, metavar='URL',
+                    help='with testing-farm: the repository the guest clones')
+    sp.add_argument('--tf-ref', default=None, metavar='REF',
+                    help='with testing-farm: the commit to test')
     sp.set_defaults(fn=cmd_request)
 
     spq = sub.add_parser(

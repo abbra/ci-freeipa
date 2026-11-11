@@ -102,3 +102,51 @@ def test_the_build_packages_come_from_the_plan_of_the_checkout(tmp_path):
     assert request.plan_packages(str(tmp_path)) == ['make', 'gcc']
     with pytest.raises(request.RequestError, match='no prepare/package'):
         request.plan_packages(str(tmp_path / 'elsewhere'))
+
+
+def _tf(tmp_path, req, **kw):
+    todo = request.jobs(req, str(tmp_path))
+    args = dict(repo_url='https://github.com/x/freeipa', ref='a' * 40,
+                dry_run=True)
+    args.update(kw)
+    return request.testing_farm(
+        dict({'build': True}, **req), todo, str(tmp_path / 'w'),
+        str(tmp_path), args['repo_url'], args['ref'], args['dry_run'])
+
+
+def test_testing_farm_gets_a_queue_of_the_presets_and_the_commit(
+        tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(request.subprocess, 'run', lambda argv: (
+        seen.append(argv), type('R', (), {'returncode': 0})())[1])
+    req = {'presets': ['presets/prci/gating/test_adtrust_install.yaml']}
+    assert _tf(tmp_path, req) == 0
+    argv = seen[0]
+    assert argv[1:4] == ['queue', 'run', str(tmp_path / 'w/request-queue.yaml')]
+    assert argv[argv.index('--tf-ref') + 1] == 'a' * 40
+    assert argv[argv.index('--tf-repo-url') + 1] == (
+        'https://github.com/x/freeipa')
+    assert '--dry-run' in argv
+    queue_doc = yaml.safe_load((tmp_path / 'w/request-queue.yaml').read_text())
+    assert queue_doc['jobs'] == [
+        {'preset': 'presets/prci/gating/test_adtrust_install.yaml'}]
+
+
+@pytest.mark.parametrize('req, kw, message', [
+    ({'presets': ['presets/qemu-smoke.yaml']}, {}, 'qemu preset'),
+    ({'presets': [{'preset': 'presets/prci/gating/test_adtrust_install.yaml',
+                   'tests': ['x']}]}, {}, '`tests` is not supported'),
+    ({'presets': ['presets/prci/gating/test_adtrust_install.yaml']},
+     {'ref': None}, '--tf-ref'),
+    ({'presets': ['presets/prci/gating/test_adtrust_install.yaml'],
+      'build': False}, {}, 'build: false'),
+])
+def test_testing_farm_refuses_what_it_cannot_run(tmp_path, req, kw, message):
+    with pytest.raises(request.RequestError, match=message):
+        _tf(tmp_path, req, **kw)
+
+
+def test_testing_farm_refuses_a_preset_of_the_checkout(tmp_path):
+    write(tmp_path, 'mine.yaml', 'name: mine\n')
+    with pytest.raises(request.RequestError, match='file of the checkout'):
+        _tf(tmp_path, {'presets': ['mine.yaml']})
