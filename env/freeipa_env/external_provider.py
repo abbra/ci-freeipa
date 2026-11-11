@@ -314,6 +314,35 @@ class ExternalProvider:
         args = ['scp'] + self._ssh_opts(h) + [local, f'{h.name}:{remote}']
         subprocess.run(args, check=True)
 
+    # where ipa-run-tests leaves the report on the controller
+    _XUNIT = ('/root/ipa-env/logs/nosetests.xml', '/root/nosetests.xml')
+
+    def clear_xunit(self):
+        """Drop a report left by an earlier run, so a run that writes none
+        is not mistaken for that one."""
+        self._ssh(self.spec.master, 'rm -f ' + ' '.join(self._XUNIT),
+                  check=False)
+
+    def fetch_xunit(self, workdir):
+        """Copy the controller's report to <workdir>/nosetests.xml."""
+        probe = ('for p in %s; do [ -f $p ] && { cat $p; break; }; done'
+                 % ' '.join(self._XUNIT))
+        try:
+            _rc, out = self._ssh(self.spec.master, probe, timeout=60)
+        except (ExternalError, subprocess.TimeoutExpired) as e:
+            out = ''
+            print(f'== xunit fetch failed: {e}', file=sys.stderr)
+        if not out:
+            print('== no xunit report found (tests produced no '
+                  'nosetests.xml; expected when the install failed)',
+                  file=sys.stderr)
+            return False
+        dst = os.path.join(workdir, 'nosetests.xml')
+        with open(dst, 'w') as f:
+            f.write(out + '\n')
+        print(f'== xunit report: {dst}')
+        return True
+
     def run_in_controller(self, cmd, env=None, log='run.log',
                           timeout=None):
         h = self.spec.master

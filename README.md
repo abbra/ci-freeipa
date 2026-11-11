@@ -104,6 +104,7 @@ Use `run --detach` for long runs:
 
 - `status` shows the state and the last lines of output.
 - `wait` gets `nosetests.xml` and prints a summary for each test. It also gives the cause of each failure. Use `--timeout` to set a limit.
+- With the podman provider the detached run lives in the master container. With the external and nested providers it is a background copy of the same `run` command on this host: its output and exit status are in `<workdir>/detached/`, and `status` and `wait` read them. After any provider's `run` or `wait`, the report is copied from the controller to `<workdir>/nosetests.xml` and summarized. A report left by an earlier run is removed first, so a run that writes none is not mistaken for it.
 - `summary` looks for `nosetests.xml` in the workdir, in its `logs`, and under `logs/collected/<host>/`, so it also works after `down`. It says which file it read when that is not the workdir's own.
 - For a nested external env, `down` collects into `<workdir>/inner/logs` and copies that into `<workdir>/logs`. `summary`, `logs` and `report` read `logs`; if it has no `collected` tree, for example after a failed copy, they read `inner/logs` instead.
 - `run --tests X` chooses tests without an edit to the env file.

@@ -27,6 +27,7 @@ handles to ``<workdir>/nested-state.json`` so that a later, separate
 
 import json
 import os
+import sys
 import shlex
 import shutil
 
@@ -382,6 +383,26 @@ class NestedProvider:
             return self._external().copy_to_controller(local, remote)
         # the podman inner provider does its own copy at run time
         pass
+
+    def clear_xunit(self):
+        if self.inner_type == 'external':
+            self._load_vms()
+            self._external().clear_xunit()
+        # the podman inner provider clears its own report at run time
+
+    def fetch_xunit(self, workdir):
+        """The run's report on the VM, to <workdir>/nosetests.xml."""
+        self._load_vms()
+        if self.inner_type == 'external':
+            return self._external().fetch_xunit(workdir)
+        try:
+            rsync_from(self._primary(),
+                       f'{self._state["remote_workdir"]}/nosetests.xml',
+                       os.path.join(workdir, 'nosetests.xml'))
+        except Exception as e:              # noqa: BLE001
+            print(f'== no xunit report fetched: {e}', file=sys.stderr)
+            return False
+        return True
 
     def run_in_controller(self, cmd, env=None, log='run.log', timeout=None):
         """Drive the inner `freeipa-env run` on the primary VM.

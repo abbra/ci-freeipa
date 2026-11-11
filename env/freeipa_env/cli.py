@@ -27,6 +27,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          DEFAULT_LINES, DEFAULT_TAIL, ScanCache, cache_prefix)
 from .htmlreport import render_html
 from .mdreport import render_markdown
+from .detached import LocalDetached
 from . import summary as xsummary
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(
@@ -624,12 +625,21 @@ def _print_summary(workdir, tail=6):
 
 
 def _finish_run(prov, workdir, rc):
-    # pull the xunit report next to the workdir logs (podman only)
-    if isinstance(prov, PodmanProvider) and rc is not None:
-        _fetch_xunit(prov, workdir)
+    # pull the xunit report next to the workdir logs, then summarize it
+    if rc is not None:
+        if isinstance(prov, PodmanProvider):
+            _fetch_xunit(prov, workdir)
+        else:
+            prov.fetch_xunit(workdir)
         _print_summary(workdir)
     print(f'== run finished with exit code {rc}')
     return rc if rc is not None else 1
+
+
+def _detacher(prov, workdir):
+    """What runs and tracks a detached run: the podman provider, inside its
+    container, else a background copy of this command."""
+    return prov if isinstance(prov, PodmanProvider) else LocalDetached(workdir)
 
 
 def cmd_run(args):
@@ -640,8 +650,17 @@ def cmd_run(args):
     if args.tests:
         run.tests = list(args.tests)
         spec.run = run
-    if args.detach:
-        _podman_only(prov, '--detach')
+    if args.detach and not isinstance(prov, PodmanProvider):
+        argv = [sys.executable, os.path.abspath(sys.argv[0])] + [
+            a for a in sys.argv[1:] if a != '--detach']
+        try:
+            LocalDetached(workdir).start(argv)
+        except RuntimeError as e:
+            print(f'error: {e}', file=sys.stderr)
+            return 1
+        print('== run started in the background: `status` follows it, '
+              '`wait` collects its result')
+        return 0
     _require_up(prov)
     cmd, env = _build_command(spec, run, prov)
     if cmd is None:
@@ -649,6 +668,11 @@ def cmd_run(args):
         return 2
     if isinstance(prov, PodmanProvider):
         _clear_stale_report(prov)
+    else:
+        # a report left by an earlier run must not pass for this one's
+        if os.path.exists(os.path.join(workdir, 'nosetests.xml')):
+            os.remove(os.path.join(workdir, 'nosetests.xml'))
+        prov.clear_xunit()
     if args.detach:
         prov.start_detached(cmd, env)
         print('== run started in the background: `status` follows it, '
@@ -660,13 +684,13 @@ def cmd_run(args):
 
 def cmd_status(args):
     spec = load_spec(args.env)
-    prov = make_provider(spec, args.workdir or default_workdir(spec), args)
-    _podman_only(prov, 'status')
-    state, rc = prov.detached_state()
+    workdir = args.workdir or default_workdir(spec)
+    det = _detacher(make_provider(spec, workdir, args), workdir)
+    state, rc = det.detached_state()
     print(f'== detached run: {state}'
           + (f' (exit code {rc})' if rc is not None else ''))
     if state != 'none':
-        print(prov.detached_tail(args.lines), end='')
+        print(det.detached_tail(args.lines), end='')
     return 0 if state in ('running', 'finished') else 1
 
 
@@ -674,10 +698,10 @@ def cmd_wait(args):
     spec = load_spec(args.env)
     workdir = args.workdir or default_workdir(spec)
     prov = make_provider(spec, workdir, args)
-    _podman_only(prov, 'wait')
+    det = _detacher(prov, workdir)
     deadline = time.time() + args.timeout if args.timeout else None
     while True:
-        state, rc = prov.detached_state()
+        state, rc = det.detached_state()
         if state == 'finished':
             break
         if state in ('none', 'lost'):
@@ -688,7 +712,7 @@ def cmd_wait(args):
             print('== still running')
             return 3
         time.sleep(args.interval)
-    prov.fetch_detached_log()
+    det.fetch_detached_log()
     return _finish_run(prov, workdir, rc)
 
 
