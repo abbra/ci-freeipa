@@ -576,6 +576,21 @@ PRCI creates its own AD domain controllers. This repository does not. Each AD ho
 
 A Samba AD DC works if SSH can reach it for log collection. Windows-only DCs need the `user` value changed.
 
+### A Samba AD domain controller in a VM
+
+With the nested provider, an `ad` host with `os: samba` becomes a Samba AD DC on its own VM. `up` installs `samba-dc`, provisions the domain `ad_domain` (default `ad.test`), keeps the DC on the private network only, serves time with chrony, and creates the users and groups that the trust tests expect. The IPA hosts get `guest_packages`; the DC does not.
+
+```yaml
+ad_domain: ad.test
+hosts:
+  - {role: master, name: master1}
+  - {role: ad, name: dc1, os: samba}
+```
+
+The generated `ipa-test-config.yaml` has the DC in its own `AD` domain with `host_type: samba`. The `ipatests` harness then drives the DC with `samba-tool` instead of PowerShell. That needs an `ipatests` that has `SambaADHost`: the FreeIPA commit "ipatests: AD host operations are methods, with Windows and Samba AD backends". Install it with `vm.rpms` or `vm.srpms`; the distribution package does not have it yet.
+
+The preset is `env/presets/qemu-samba-ad.yaml`. I ran `TestCertsInIDOverrides` (the trust, an AD user, ID overrides and an sssd D-Bus lookup) against it; both tests passed with the changed `ipatests` copied onto the IPA VM. Not covered yet: the child and tree domains, the `cannotchangepwduser` and `expiredaduser` properties, UPN suffix users, and AD CS. The Samba DNS server has one global forwarder, not one per zone.
+
 ## Run queues and the supervisor (`queue`)
 
 A queue runs an ordered list of presets. It uses a pool of **pre-allocated runners**. A runner is a host with SSH, podman, and systemd. The lab VMs are runners. Queues replace the per-PR job scheduling of PRCI.

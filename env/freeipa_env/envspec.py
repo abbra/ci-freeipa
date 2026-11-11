@@ -53,7 +53,7 @@ class HostSpec:
     user: Optional[str] = None        # external: SSH user (default root)
     port: Optional[int] = None        # external: SSH port
     image: Optional[str] = None       # per-host image override
-    os: Optional[str] = None          # e.g. windows (ad-image lane)
+    os: Optional[str] = None          # ad host: samba (we provision it)
     ip: Optional[str] = None          # address peers use (default: address)
 
     @classmethod
@@ -66,6 +66,11 @@ class HostSpec:
     @property
     def is_external(self):
         return bool(self.address)
+
+    @property
+    def is_ad(self):
+        """An Active Directory domain controller, not an IPA host"""
+        return self.role == 'ad'
 
 
 @dataclass
@@ -109,6 +114,8 @@ class EnvSpec:
     subnet_v6: Optional[str] = None
     admin_name: str = 'admin'
     admin_password: str = 'Secret123'
+    # the Active Directory domain of the hosts with the `ad` role
+    ad_domain: str = 'ad.test'
     dirman_password: str = 'Secret123'
     hosts: list = field(default_factory=list)
     resources: dict = field(default_factory=dict)
@@ -132,6 +139,7 @@ class EnvSpec:
         'replica': {'memory': '1800m', 'memory-swap': '2500m'},
         'client': {'memory': '512m', 'memory-swap': '1024m'},
         'external': {'memory': '1800m', 'memory-swap': '2500m'},
+        'ad': {'memory': '1536m', 'memory-swap': '2048m'},
     }
 
     @classmethod
@@ -218,8 +226,9 @@ class EnvSpec:
 
     def host_fqdn(self, h):
         """FQDN for a host: <name>.<domain> unless it is external (its own
-        FQDN is authoritative; name is a label only)."""
-        return f'{h.name}.{self.domain}'
+        FQDN is authoritative; name is a label only). An AD host is named in
+        the AD domain."""
+        return f'{h.name}.{self.ad_domain if h.is_ad else self.domain}'
 
     def podman_image(self, h):
         img = h.image or self.image

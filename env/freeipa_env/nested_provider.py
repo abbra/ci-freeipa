@@ -33,7 +33,7 @@ import shutil
 
 import yaml
 
-from . import guest_settings, queue
+from . import guest_settings, queue, samba_ad
 from .envspec import EnvSpec
 from .external_provider import ExternalProvider
 from .vmbackend import (VMHandle, make_backend, rsync_from, rsync_to,
@@ -182,11 +182,26 @@ class NestedProvider:
         for raw in self.spec.raw['hosts']:
             vm = self._vms[place[raw['name']]]
             h = dict(raw)
-            h.update(name=f"{raw['name']}.{self.spec.domain}",
+            domain = (self.spec.ad_domain if raw['role'] == 'ad'
+                      else self.spec.domain)
+            h.update(name=f"{raw['name']}.{domain}",
                      address=vm.host, port=vm.port, ip=self._vm_ip(vm))
             hosts.append(h)
         d['hosts'] = hosts
         return d
+
+    def _provision_ad(self, ext, h):
+        """Make the VM of an `ad` host a Samba AD domain controller"""
+        if h.os != 'samba':
+            raise NestedError(
+                f'host {h.name}: a nested `ad` host is provisioned here, '
+                f'which only knows `os: samba`')
+        print(f'== {h.name}: provisioning a Samba AD DC for '
+              f'{self.spec.ad_domain}')
+        script = samba_ad.script(
+            self.spec.ad_domain, self.spec.ad_domain.split('.')[0].upper(),
+            h.ip, self.spec.dns_forwarder or '8.8.8.8')
+        ext._ssh(h, 'bash -ec ' + shlex.quote(script), timeout=1200)
 
     def _external(self):
         """ExternalProvider over the inner spec, driven from the control node."""
@@ -304,15 +319,18 @@ class NestedProvider:
         if self._cfg('bootc'):
             for h in ext.spec.hosts:
                 ext._ssh(h, 'bootc usroverlay', timeout=600)
+        ipa_hosts = [h for h in ext.spec.hosts if not h.is_ad]
         try:
             done = guest_settings.apply(
-                self.spec.vm or {}, ext.spec.hosts,
+                self.spec.vm or {}, ipa_hosts,
                 lambda h, cmd, t: ext._ssh(h, cmd, timeout=t),
                 ext._scp)
         except ValueError as e:
             raise NestedError(str(e)) from e
-        print(f'== guest setup on {count} VM(s): '
+        print(f'== guest setup on {len(ipa_hosts)} VM(s): '
               + '; '.join(f'{n}: {s}' for n, s in done.items()))
+        for h in (h for h in ext.spec.hosts if h.is_ad):
+            self._provision_ad(ext, h)
         ext.up()
         print(f'== nested environment {self.spec.name} is attached on '
               f'{count} VM(s)')

@@ -160,8 +160,9 @@ class ExternalProvider:
         The FQDN must be the first name on the IP line: ipa-replica-install
         reverse-resolves the master's IP and compares against it."""
         for t in self.spec.hosts:
-            fqdn = t.name if t.name.endswith('.' + self.spec.domain) \
-                else f'{t.name}.{self.spec.domain}'
+            dom = self.spec.ad_domain if t.is_ad else self.spec.domain
+            fqdn = t.name if t.name.endswith('.' + dom) \
+                else f'{t.name}.{dom}'
             ip, short = t.ip or t.address, fqdn.split('.')[0]
             for h in self.spec.hosts:
                 self._ssh(h, f"sed -i '/^{ip} /d; /[[:space:]]{fqdn}\\([[:space:]]\\|$\\)/d' /etc/hosts && "
@@ -191,14 +192,22 @@ class ExternalProvider:
 
     def _write_config(self):
         import yaml
-        hosts = []
+        hosts, ad_hosts = [], []
         for h in self.spec.hosts:
-            role = h.role
-            hosts.append({
-                'name': h.name,
-                'role': role,
-                'ip': h.ip or h.address,
-            })
+            entry = {'name': h.name, 'role': h.role,
+                     'ip': h.ip or h.address}
+            if h.is_ad:
+                # host_type: samba makes the harness drive the DC with
+                # samba-tool (SambaADHost) instead of PowerShell
+                if h.os == 'samba':
+                    entry['host_type'] = 'samba'
+                ad_hosts.append(entry)
+            else:
+                hosts.append(entry)
+        domains = [{'name': self.spec.domain, 'type': 'IPA', 'hosts': hosts}]
+        if ad_hosts:
+            domains.append({'name': self.spec.ad_domain, 'type': 'AD',
+                            'hosts': ad_hosts})
         cfg = {
             'admin_name': self.spec.admin_name,
             'admin_password': self.spec.admin_password,
@@ -208,8 +217,7 @@ class ExternalProvider:
             'domain_level': self.spec.domain_level,
             'dns_forwarder': self.spec.dns_forwarder,
             'root_ssh_key_filename': '/root/.ipa/framework_key',
-            'domains': [{'name': self.spec.domain, 'type': 'IPA',
-                         'hosts': hosts}],
+            'domains': domains,
         }
         path = os.path.join(self.workdir, 'ipa-test-config.yaml')
         with open(path, 'w') as f:
