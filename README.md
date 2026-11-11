@@ -611,7 +611,7 @@ For each run, the supervisor does these steps:
 2. Checks each runner for SSH and podman. Copies the local ci-freeipa tree to `--remote-ci`. The default is `/root/freeipa-ci/ci`.
 3. Asks each runner to find the channel image for each podman preset. A nested-qemu preset needs none. This runs `freeipa-env resolve` on the runner. If an image is missing, the run stops before any job starts. The results are saved per runner in `summary.md`.
 4. Schedules the jobs. Each runner takes the next job from the front of the list. It runs one job at a time. Each job runs `up`, then `run`, then `down`. Each job has a remote timeout. The default is 4 hours. Each job uses the workdir `/root/jobs/<job-key>`.
-5. Writes `summary.tsv`, `summary.md`, and a transcript for each job, in `--outdir`. The default is `./<queue>.queue`. The exit code is 0 only when every job passes.
+5. Writes `summary.tsv`, `summary.md`, and a transcript for each job, in `--outdir`. The default is `<state dir>/freeipa-env/queues/<queue>`, next to the environment workdirs, so a run leaves nothing in the repository. The exit code is 0 only when every job passes.
 
 ### Job order
 

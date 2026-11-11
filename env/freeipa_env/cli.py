@@ -1119,7 +1119,7 @@ def cmd_queue(args):
                                      ipa_packages=ipa_packages),
                     indent=2))
         return 0
-    outdir = args.outdir or os.path.join(os.getcwd(), f'{q.name}.queue')
+    outdir = args.outdir or os.path.join(_state_dir(), 'queues', q.name)
     try:
         runners = [make_runner(s, ssh_key=args.ssh_key, tf_cfg=tf_cfg)
                    for s in args.runner]
@@ -1636,7 +1636,8 @@ def main(argv=None):
                       help='per-job remote timeout in seconds '
                            '(default 14400 = 4h)')
     qrun.add_argument('--outdir', default=None,
-                      help='local artifacts dir (default ./<queue>.queue)')
+                      help='local artifacts dir (default '
+                           '<state dir>/freeipa-env/queues/<queue>)')
     qrun.add_argument('--remote-ci', default='~/freeipa-ci/ci',
                       help='ci-freeipa tree location on each runner; ~ expands '
                            'to the runner user\'s home (default '
