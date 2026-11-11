@@ -32,7 +32,7 @@ import shutil
 
 import yaml
 
-from . import guest_packages, queue
+from . import guest_settings, queue
 from .envspec import EnvSpec
 from .external_provider import ExternalProvider
 from .vmbackend import (VMHandle, make_backend, rsync_from, rsync_to,
@@ -295,31 +295,14 @@ class NestedProvider:
         if self._cfg('bootc'):
             for h in ext.spec.hosts:
                 ext._ssh(h, 'bootc usroverlay', timeout=600)
-        # a vm.vms entry named after a host overrides copr and selinux
-        over = {v.get('name'): v for v in self._cfg('vms') or []}
-        for h in ext.spec.hosts:
-            mode = over.get(h.name, {}).get('selinux', self._cfg('selinux'))
-            if mode not in (None, 'permissive', 'enforcing'):
-                raise NestedError(f'selinux for {h.name} is {mode!r}; '
-                                  f'use permissive or enforcing')
-            if mode:
-                # persisted for reboots; -DB also logs dontaudit denials
-                perm = mode == 'permissive'
-                ext._ssh(h, f"sed -i 's/^SELINUX=.*/SELINUX={mode}/' "
-                            f"/etc/selinux/config && "
-                            f"setenforce {int(not perm)} && "
-                            f"semodule -{'DB' if perm else 'B'}",
-                         timeout=300)
-        pkgs = self._cfg('guest_packages') or []
-        copr = self._cfg('copr') or []
-        per = {h.name: over.get(h.name, {}).get('copr', copr)
-               for h in ext.spec.hosts}
-        for h in ext.spec.hosts:
-            if pkgs or per[h.name]:
-                ext._ssh(h, guest_packages.install_cmd(pkgs, per[h.name]),
-                         timeout=3600)
-        print(f'== guest setup on {count} VM(s): packages {pkgs}; copr '
-              + ', '.join(f'{n}={c}' for n, c in per.items()))
+        try:
+            done = guest_settings.apply(
+                self.spec.vm or {}, ext.spec.hosts,
+                lambda h, cmd, t: ext._ssh(h, cmd, timeout=t))
+        except ValueError as e:
+            raise NestedError(str(e)) from e
+        print(f'== guest setup on {count} VM(s): '
+              + '; '.join(f'{n}: {s}' for n, s in done.items()))
         ext.up()
         print(f'== nested environment {self.spec.name} is attached on '
               f'{count} VM(s)')
