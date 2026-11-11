@@ -744,6 +744,20 @@ To run that plan from another clone of this repository, use `--tf-repo-url` and 
 
 Add `--copr OWNER/PROJECT` to the same command. You can repeat this option. The same plan runs. The guest installs the IPA packages from the COPR and from the distribution together. The COPR must have builds for that Fedora version.
 
+### Running the jobs in qemu VMs
+
+A job whose preset is a nested qemu environment (`provider: nested`, `vm.backend: qemu`) runs in qemu VMs started on the Testing Farm guest, not in podman containers. Submit it with the qemu plan:
+
+```
+freeipa-env queue run queues/qemu-copr.yaml --runner testing-farm \
+    --tf-plan /tmt/plans/qemu --tf-compose Fedora-45
+```
+
+- The request gets a `hardware` section on its own, from the presets: `virtualization.is-supported` (the VMs need KVM) and memory for the VMs of the biggest job plus 4 GiB. A podman job adds nothing. `--dry-run` prints the request body.
+- The plan `/tmt/plans/qemu` installs qemu, `xorriso` and `rsync` on the guest. `tests/freeipa-env/qemu-prep.sh` then checks `/dev/kvm`, makes an ssh key if the guest has none, and downloads the cloud images the presets name. It checks each image against the SHA-256 in Fedora's `CHECKSUM` file.
+- The runner bakes no channel image for these jobs. The IPA comes from the preset's `vm.copr` and `vm.guest_packages`, so the compose only picks the guest OS that runs the VMs. The preset must be in this repository: the guest clones it.
+- `queues/qemu-copr.yaml` is the same test that `presets/qemu-copr-customized_ds_config_install.yaml` runs locally with `freeipa-env up` and `run`, so a local and a Testing Farm result can be compared.
+
 ## Fedora dist-git lane (packaging PR CI)
 
 Fedora dist-git CI (Packit) runs a **Koji scratch build** for each dist-git PR. It runs the scratch build before the tests. It passes the task ID to the test request as `KOJI_TASK_ID`.
