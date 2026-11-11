@@ -72,7 +72,7 @@ freeipa-env run  ENV.YAML --tests X   Run these tests instead of the run.tests i
 freeipa-env run  ENV.YAML --detach    Start the tests and return. The run continues after this command ends.
 freeipa-env status ENV.YAML           Show the state and output of a detached run.
 freeipa-env wait ENV.YAML             Wait for a detached run, get the report, and print a summary.
-freeipa-env summary ENV.YAML          Show the result of each test in the last run, with the cause of each failure.
+freeipa-env summary ENV.YAML|QUEUE.YAML Show the result of each test in the last run, with the cause of each failure. For a queue, each job in turn and then the totals.
 freeipa-env overlay ENV.YAML SRC:/DST Copy files into every container. Each copy is checked with a hash.
 freeipa-env reset ENV.YAML            Create fresh containers from the same spec. Keep the old logs.
 freeipa-env list                      List the environments on this host.

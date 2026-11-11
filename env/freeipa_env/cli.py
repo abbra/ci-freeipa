@@ -675,7 +675,35 @@ def cmd_wait(args):
     return _finish_run(prov, workdir, rc)
 
 
+def _queue_summary(path, tail):
+    """`summary` for a queue file: each job that left a report, then the
+    totals; jobs that never ran or have no report are only counted."""
+    q = QueueSpec.from_file(path)
+    print(f'queue {q.name}: {len(q.jobs)} jobs ({q.path})')
+    total, missing = {}, 0
+    for job in q.jobs:
+        try:
+            wd = default_workdir(EnvSpec.from_file(job.path))
+        except (EnvSpecError, OSError):
+            missing += 1
+            continue
+        print(f'== {job.preset_rel}')
+        counts = _print_summary(wd, tail)
+        if counts is None:
+            print('   no nosetests.xml')
+            missing += 1
+            continue
+        for state, n in counts.items():
+            total[state] = total.get(state, 0) + n
+    print('== total: ' + (', '.join(f'{n} {s}' for s, n in total.items()
+                                    if n) or 'no results')
+          + f'; {missing} job(s) without a report')
+    return 0 if len(total) else 1
+
+
 def cmd_summary(args):
+    if not args.workdir and _is_queue(args.env):
+        return _queue_summary(args.env, args.tail)
     spec = load_spec(args.env)
     workdir = args.workdir or default_workdir(spec)
     if _print_summary(workdir, args.tail) is None:
