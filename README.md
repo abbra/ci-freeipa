@@ -920,6 +920,33 @@ freeipa-env down env/generated/mixed-cds.yaml
 
 Check the result: `master1` must report `freeipa-server-*.fc44`, and `replica1` must report `freeipa-server-*.fc45`. The FreeIPA server build must match its release in both VMs. If not, the VM image is wrong.
 
+Then investigate the logs. This is the walkthrough for the run above, with output from a passing run:
+
+```
+freeipa-env logs env/generated/mixed-cds.yaml                  # 1. triage: which categories have lines
+freeipa-env logs env/generated/mixed-cds.yaml --category tests # 2. xunit: pass/fail and failing messages
+freeipa-env logs env/generated/mixed-cds.yaml --category ds --lines 3 --tail 0
+freeipa-env logs env/generated/mixed-cds.yaml --category ca --host master1.ipa.test --lines 2
+```
+
+1. The summary shows the `ds` category with 93 matched lines and `ca` with 114. Most lines are expected noise. `Unknown attribute nssslapd-maxbersize will be ignored` repeats on every 389-ds start. Look for lines that do not repeat.
+2. `tests` reads `logs/collected/master1.ipa.test/nosetests.xml`. A failure shows its message and traceback tail under the test name. `2 tests: 0 failed` means the xunit file is the only evidence you need.
+3. `ds` matches on `- ERR -` and `- CRIT -`. Each `errors` file of the per-test trees is listed separately. The `no new matching lines` rows are the same lines seen in an earlier test, so they are not repeated.
+4. `ca` for `master1` shows the spawn logs and `debug.<date>.log` of the CA. A `SEVERE` line such as `Unable to create profile: Profile already exists` can appear in a passing run. Check the timestamp against the test you are debugging.
+
+To find one failing test's logs, look up its directory under `logs/collected/<host>/ipa-env/logs/`. Then narrow with `--pattern`:
+
+```
+freeipa-env logs env/generated/mixed-cds.yaml --category ds --pattern 'krb5_get_default_realm|Attribute' --lines 5 --tail 0
+```
+
+For a single failing test on a bad run, `report` writes one shareable file:
+
+```
+freeipa-env report --workdir ~/.local/state/freeipa-env/qemu-mixed-prci-nightly-latest-testing-customized_ds_config_install -o /tmp/cds.html
+```
+
+
 ## Unit tests
 
 The Python tests for the infrastructure helpers live in `env/tests/`. They need no VMs or containers. Run them from `env/`:
