@@ -23,9 +23,14 @@ UPLOADS = '/root/ipa-local'
 
 def _selinux(mode):
     perm = mode == 'permissive'
-    # persisted for reboots; -DB also logs dontaudit denials
+    # persisted for reboots; -DB also logs dontaudit denials. A fresh VM may
+    # still hold the policy lock (cloud-init, a package trigger), so semodule
+    # is retried for up to three minutes.
+    sem = f"semodule -{'DB' if perm else 'B'}"
     return (f"sed -i 's/^SELINUX=.*/SELINUX={mode}/' /etc/selinux/config && "
-            f"setenforce {int(not perm)} && semodule -{'DB' if perm else 'B'}")
+            f"setenforce {int(not perm)} && "
+            f"for i in $(seq 36); do {sem} && break; "
+            f"[ $i = 36 ] && exit 1; sleep 5; done")
 
 
 def _copr(repos):
