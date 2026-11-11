@@ -895,6 +895,28 @@ Add the check to your pull request gate. A preset change then cannot break a que
 freeipa-env check   # run from the repository root. It checks all presets and exits non-zero on any problem.
 ```
 
+### Example: master on Fedora 44, replica on Fedora 45
+
+This runs the PRCI `customized_ds_config_install` test on two VMs from two Fedora releases. The test asks for `master1` and `replica1`. `nested-qemu-mixed.yaml` puts `master1` on the F44 cloud image (`vm.vms`). Every other host gets the default F45 image. Both VMs get the `ipa-distro` packages from their own release, including `firewalld`.
+
+Download the two images first. Verify them against the `CHECKSUM` file in the same directory:
+
+```
+mkdir -p ~/.cache/freeipa-ci/images
+# Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 and ...-45-1.4.x86_64.qcow2
+# from https://dl.fedoraproject.org/pub/fedora/linux/releases/{44,45}/Cloud/x86_64/images/
+```
+
+```
+freeipa-env blend prci/nightly-latest-testing/customized_ds_config_install.yaml \
+    presets/nested-qemu-mixed.yaml --name mixed-cds
+freeipa-env up  env/generated/mixed-cds.yaml
+freeipa-env run env/generated/mixed-cds.yaml
+freeipa-env down env/generated/mixed-cds.yaml
+```
+
+Check the result: `master1` must report `freeipa-server-*.fc44`, and `replica1` must report `freeipa-server-*.fc45`. The FreeIPA server build must match its release in both VMs. If not, the VM image is wrong.
+
 ## Notes
 
 - The podman provider uses one network for each env: `10.89.0.0/24` and `2001:db8:1::/64`. Only one env can run on each host in version 1. If these defaults conflict with a podman network that another project made, set `subnet_v4:` and `subnet_v6:` in the preset.

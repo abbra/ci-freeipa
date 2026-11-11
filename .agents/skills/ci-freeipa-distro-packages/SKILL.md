@@ -81,6 +81,20 @@ Nothing but this repository is involved: the request runs its own plan `tmt/plan
 
 Do not pass `--freeipa-src` or `--tf-repo-url` here: either one means "build that FreeIPA repo" (to use another clone of ci-freeipa, add `--ipa-from-distro`). A queue on a host runner (`--runner local` or `USER@HOST`) bakes missing channel images the same way, but for dist 44 only. For another release bake the channel image first with `images/build.sh --dist N`; that overwrites the host's `freeipa-ci/full:current`, so only do it on a host where that is acceptable.
 
+## 3b. Two releases in one run (nested VMs)
+
+When hosts must run different Fedora releases, use the nested qemu provider. Each host is one VM. `presets/nested-qemu-mixed.yaml` puts `master1` on F44 and every other host on F45. `vm.guest_packages: [ipa-distro]` installs each VM's own release packages, including `firewalld`.
+
+```sh
+freeipa-env blend prci/nightly-latest-testing/customized_ds_config_install.yaml \
+    presets/nested-qemu-mixed.yaml --name mixed-cds
+freeipa-env up env/generated/mixed-cds.yaml && freeipa-env run env/generated/mixed-cds.yaml
+```
+
+- Check each VM's release before trusting a result: `freeipa-server-*.fc44` on the master, `.fc45` on the replica. A mismatch means the image is wrong.
+- The job deadline of the calling tool can cut a run short; run the test without one.
+- Setup details (framework SSH key, `framework_key` settings, `/etc/hosts`) are in the README under "Framework SSH key" and "Example: master on Fedora 44, replica on Fedora 45".
+
 ## 4. Diagnose and report
 
 - A failure here is a finding about the distribution, not about a patch: before reporting it, rule out the environment (DNS forwarder warning from `up`, memory limits, leaked state from an earlier class). Use `freeipa-env logs ENV.yaml --test PART --file ipaserver-install.log --host master1` for one installer log.
