@@ -60,6 +60,30 @@ To submit a Testing Farm batch from here, use this command. The repository under
 freeipa-env queue run QUEUE --runner testing-farm --freeipa-src ~/freeipa
 ```
 
+### Temp commits: `request`
+
+A contributor can ask for tests in the FreeIPA tree itself. A commit adds `.ci-freeipa.yaml` at the root of the tree, the way PRCI takes a link `.freeipa-pr-ci.yaml`. The file lists presets, or a queue, to run:
+
+```yaml
+build: true                     # default: build FreeIPA from this checkout
+presets:
+  - presets/qemu-smoke.yaml
+  - preset: presets/qemu-smoke.yaml
+    tests: [test_integration/test_installation.py::TestInstallMaster]
+queue: queues/qemu-copr.yaml    # or a queue
+```
+
+```
+freeipa-env request .ci-freeipa.yaml --freeipa-src ~/freeipa [--workdir DIR] [--dry-run]
+```
+
+- A path is a file of the checkout when it has one, so a contributor can add a preset in the same commit. Otherwise it is a file of this repository: a preset is relative to `env/`, a queue to the repository root. A name that is in neither is an error. An unknown key is an error.
+- With `build: true` the command runs `make srpms` on the checkout in a Fedora container. The container installs the packages of the checkout's `ci/tmt/plans/freeipa-env.fmf`. Then each preset that does not name its own build gets that SRPM: `build.srpm` for a podman preset, `vm.srpms` for a nested one. An external preset tests its own IPA.
+- `tests` replaces `run.tests` of that preset.
+- The presets run one after the other: `up`, `run`, `summary`, `down`. The exit status is 0 when every preset passed. A table of the results goes to `$GITHUB_STEP_SUMMARY` when it is set.
+
+The FreeIPA tree has a workflow that runs this on a contributor's fork. See `doc/designs/ci_modernization.md` there. The tests of this repository cover the request file and the adaptation of the presets. A request with `qemu-smoke` and `build: false` passed on a local machine, and `make srpms` of a FreeIPA checkout ran in the container.
+
 ## Commands
 
 ```

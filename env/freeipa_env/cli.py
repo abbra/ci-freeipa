@@ -246,6 +246,12 @@ def cmd_check(args):
     return 1 if (n_bad or missing) else 0
 
 
+def cmd_request(args):
+    """Run what a temp commit's `.ci-freeipa.yaml` asks for"""
+    from . import request
+    return request.main_args(args)
+
+
 def cmd_migrate(args):
     """Generate freeipa-env presets from a PRCI definition file."""
     from .prci import migrate
@@ -1604,6 +1610,20 @@ def main(argv=None):
                     help='preset files or directories '
                          '(default: presets/ under env)')
     sp.set_defaults(fn=cmd_check)
+
+    sp = sub.add_parser(
+        'request',
+        help='run the presets or queue that a FreeIPA checkout asks for in '
+             '.ci-freeipa.yaml (a temp commit)')
+    sp.add_argument('request', help='the request file, usually '
+                    '<freeipa checkout>/.ci-freeipa.yaml')
+    sp.add_argument('--freeipa-src', default='.', metavar='DIR',
+                    help='the FreeIPA checkout under test (default: .)')
+    sp.add_argument('--workdir', default='ci-freeipa-request', metavar='DIR',
+                    help='where the presets, logs and state go')
+    sp.add_argument('--dry-run', action='store_true',
+                    help='print what would run and stop')
+    sp.set_defaults(fn=cmd_request)
 
     spq = sub.add_parser(
         'queue', help='ordered preset queues + the queue supervisor')
