@@ -234,6 +234,7 @@ vm:
 - The disk is cached in `~/.cache/freeipa-ci/images/containerdisk/`, named after the image id. A tag that moves is picked up on the next `up`. An unchanged image is not copied again.
 - `images/vm/publish.sh DISK.qcow2 REF [--push]` builds the image. It labels the image with the disk's SHA-256. Run `podman login` first; the script does not handle credentials. The Fedora cloud image that `qemu-prep.sh` downloads is the usual input.
 - On Testing Farm, `qemu-prep.sh` does not download an image named `containerdisk:`, and the qemu plan installs podman. A guest then pulls from your registry, not from `download.fedoraproject.org`.
+- The Fedora 45 qemu presets (`nested-qemu`, `nested-qemu-external`, `nested-qemu-mixed`, `qemu-copr-customized_ds_config_install`) use `containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest`, which [ci-freeipa-vm-images](https://github.com/freeipa/ci-freeipa-vm-images) builds, updates and tests. That is an updated image, so it may be newer than the file images. They need podman for the pull. The Fedora 44 image of the mixed presets is still a file until the registry has it.
 
 I tested it with a local image: `publish.sh` built a containerdisk from the Fedora 44 cloud image, and the qemu backend booted a VM from it in 17 s. I did not pull from a real registry, and I did not run it on Testing Farm.
 

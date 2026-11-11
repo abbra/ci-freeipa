@@ -8,7 +8,7 @@ provider: nested
 inner: external
 vm:
   backend: qemu
-  image: ~/.cache/freeipa-ci/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2
+  image: containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest
   cpus: 4
   disk: 40G
 hosts:
