@@ -80,6 +80,24 @@ PY
 )" || die "could not parse FREEIPA_JOBS: $FREEIPA_JOBS"
 [ -n "$JOB_LINES" ] || die "FREEIPA_JOBS parsed to an empty job list"
 
+# A nested-qemu preset runs in qemu VMs, not in podman containers: it has no
+# channel image to bake, and the guest needs KVM, an ssh key and the cloud
+# images it names (qemu-prep.sh).
+is_qemu_preset() {
+    grep -qE '^provider:[[:space:]]*nested' "$1" \
+        && grep -qE '^[[:space:]]+backend:[[:space:]]*qemu' "$1"
+}
+TOTAL_JOBS=0
+QEMU_PRESETS=()
+while IFS=$'\t' read -r _JK JPRESET; do
+    [ -n "$JPRESET" ] || continue
+    [ -f "$CI/env/$JPRESET" ] || die "preset not found: $CI/env/$JPRESET"
+    TOTAL_JOBS=$((TOTAL_JOBS + 1))
+    if is_qemu_preset "$CI/env/$JPRESET"; then QEMU_PRESETS+=("$CI/env/$JPRESET"); fi
+done <<EOF
+$JOB_LINES
+EOF
+
 # stage-lib.sh requires WORKDIR before sourcing. In the batch model the per
 # preset workdir only exists inside its tf-job.sh child (it derives
 # WORKDIR from JOB_WORKDIR), so the driver points its own namespace at the
@@ -94,10 +112,18 @@ source "$CI/tmt/tests/freeipa-env/stage-lib.sh"
 
 # podman is installed by the plan's prepare step; keep a guard so a missing
 # tool fails with a clear message instead of a cryptic `podman` not found.
-command -v podman >/dev/null 2>&1 || die "podman not found on the guest (prepare step should have installed it)"
-echo "podman: $(podman --version 2>/dev/null | head -1)"
-[ -d /run/systemd/system ] && echo "systemd: running" \
-    || echo "WARN: systemd not detected; the podman provider may time out waiting for multi-user.target"
+# A batch of only nested-qemu presets does not use it.
+if [ "${#QEMU_PRESETS[@]}" -lt "$TOTAL_JOBS" ]; then
+    command -v podman >/dev/null 2>&1 || die "podman not found on the guest (prepare step should have installed it)"
+    echo "podman: $(podman --version 2>/dev/null | head -1)"
+    [ -d /run/systemd/system ] && echo "systemd: running" \
+        || echo "WARN: systemd not detected; the podman provider may time out waiting for multi-user.target"
+fi
+# KVM, an ssh key and the cloud images for the qemu VMs
+if [ "${#QEMU_PRESETS[@]}" -gt 0 ]; then
+    bash "$CI/tmt/tests/freeipa-env/qemu-prep.sh" "${QEMU_PRESETS[@]}" \
+        || die "qemu host preparation failed"
+fi
 
 SRPM_URL="${FREEIPA_SRPM_URL:-}"
 REPO_URL="${FREEIPA_REPO_URL:-}"
@@ -183,6 +209,8 @@ add_channel() {
 while IFS=$'\t' read -r JK JPRESET; do
     [ -n "$JPRESET" ] || continue
     [ -f "$CI/env/$JPRESET" ] || die "preset not found: $CI/env/$JPRESET"
+    # a nested-qemu preset runs in VMs: there is no channel image to bake
+    is_qemu_preset "$CI/env/$JPRESET" && continue
     if [ -n "$GLOBAL_CHANNEL" ]; then
         add_channel "$GLOBAL_CHANNEL"
     else

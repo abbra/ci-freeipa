@@ -41,6 +41,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .envspec import EnvSpec, EnvSpecError
 from .runner import Runner, RunnerTransportError
 
 DEFAULT_URL = 'https://api.testing-farm.io'
@@ -291,6 +292,26 @@ def fetch_artifacts(request_id, workdir, token, url=DEFAULT_URL,
     return per_key
 
 
+def qemu_hardware(jobs):
+    """The guest hardware the nested-qemu jobs among `jobs` need, or None
+    when there is none: KVM, and memory for the VMs of the biggest job (the
+    jobs of a batch run one after another) plus 4 GiB for the guest."""
+    mib = 0
+    for j in jobs:
+        try:
+            spec = EnvSpec.from_file(j.path)
+        except (AttributeError, EnvSpecError, OSError):
+            continue
+        if spec.provider != 'nested' or (spec.vm or {}).get('backend') != 'qemu':
+            continue
+        mib = max(mib, sum(int(spec.resource(h.role)['memory'].rstrip('m'))
+                           for h in spec.hosts))
+    if not mib:
+        return None
+    return {'virtualization': {'is-supported': True},
+            'memory': f'>= {-(-(mib + 4096) // 1024)} GiB'}
+
+
 def build_tf_request(cfg, jobs, timeout_s, srpm=None, copr=None,
                      ipa_from=None, ipa_packages=None):
     """The TF request body for a **batch** of queue jobs (pure; used by the
@@ -344,6 +365,9 @@ def build_tf_request(cfg, jobs, timeout_s, srpm=None, copr=None,
         'variables': variables,
         'settings': {'pipeline': {'skip_guest_setup': True}},
     }
+    hardware = qemu_hardware(jobs)
+    if hardware:
+        env['hardware'] = hardware
     body = {
         'test': {
             'fmf': {

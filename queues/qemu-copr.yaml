@@ -1,0 +1,8 @@
+# The customized-DS install test in qemu VMs, IPA from the abbra/pqc COPR.
+# Run it locally (`queue run`) or on Testing Farm with the qemu plan:
+#   freeipa-env queue run queues/qemu-copr.yaml --runner testing-farm \
+#       --tf-plan /tmt/plans/qemu --tf-compose Fedora-45
+name: qemu-copr
+jobs:
+  - preset: presets/qemu-copr-customized_ds_config_install.yaml
+    note: customized 389-ds config install, master + replica, SELinux enforcing
