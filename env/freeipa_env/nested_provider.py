@@ -295,6 +295,19 @@ class NestedProvider:
         if self._cfg('bootc'):
             for h in ext.spec.hosts:
                 ext._ssh(h, 'bootc usroverlay', timeout=600)
+        mode = self._cfg('selinux')
+        if mode not in (None, 'permissive', 'enforcing'):
+            raise NestedError(
+                f'vm.selinux is {mode!r}; use permissive or enforcing')
+        if mode:
+            # persisted for reboots; -DB also logs dontaudit denials
+            for h in ext.spec.hosts:
+                perm = mode == 'permissive'
+                ext._ssh(h, f"sed -i 's/^SELINUX=.*/SELINUX={mode}/' "
+                            f"/etc/selinux/config && "
+                            f"setenforce {int(not perm)} && "
+                            f"semodule -{'DB' if perm else 'B'}",
+                         timeout=300)
         pkgs = self._cfg('guest_packages') or []
         copr = self._cfg('copr') or []
         # a vm.vms entry named after a host may set its own copr list
