@@ -21,6 +21,7 @@ import copy
 import glob
 import os
 import shlex
+import re
 import subprocess
 import sys
 
@@ -147,12 +148,35 @@ def _is_nested(path):
         return (yaml.safe_load(f) or {}).get('provider') == 'nested'
 
 
-def build_rpms(srpm_dir, out):
+def vm_dist(paths):
+    """The Fedora release of the VM images of these nested presets (from the
+    image name), or None. The RPMs must be built for it: an RPM built on
+    Fedora 44 does not install on a Fedora 45 VM (libini_config.so.5)."""
+    dists = set()
+    for path in paths:
+        with open(path) as f:
+            vm = (yaml.safe_load(f) or {}).get('vm') or {}
+        images = [vm.get('image')] + [
+            v.get('image') for v in vm.get('vms') or []]
+        for image in images:
+            m = re.search(r'fedora\D*?(\d{2,})', str(image or ''),
+                          re.IGNORECASE)
+            if m:
+                dists.add(m.group(1))
+    if len(dists) > 1:
+        raise RequestError(f'the presets use VM images of Fedora '
+                           f'{sorted(dists)}: one build serves one release')
+    return dists.pop() if dists else None
+
+
+def build_rpms(srpm_dir, out, dist=None):
     """The binary RPMs of the SRPM, built in podman (images/build.sh)"""
-    print(f'== building the RPMs of {srpm_dir} in podman', flush=True)
+    print(f'== building the RPMs of {srpm_dir} in podman'
+          + (f' for Fedora {dist}' if dist else ''), flush=True)
     rc = subprocess.run([
         os.path.join(CI_ROOT, 'images', 'build.sh'), '--srpm', srpm_dir,
-        '--build-only', '--rpms-out', out, '--tool', 'podman']).returncode
+        '--build-only', '--rpms-out', out, '--tool', 'podman',
+        *(['--dist', dist] if dist else [])]).returncode
     if rc or not glob.glob(os.path.join(out, '*.rpm')):
         raise RequestError(f'building the RPMs failed (exit {rc})')
     return out
@@ -216,8 +240,10 @@ def run(request_file, src, workdir, image=IMAGE, dry_run=False,
     # the VMs of a nested preset install RPMs: build them once in podman
     # rather than on every VM (it needs more memory than a test VM has)
     rpms_dir = None
-    if srpm_dir and any(_is_nested(p) for _k, p, _t in todo):
-        rpms_dir = build_rpms(srpm_dir, os.path.join(workdir, 'ipa-rpms'))
+    nested = [p for _k, p, _t in todo if _is_nested(p)]
+    if srpm_dir and nested:
+        rpms_dir = build_rpms(srpm_dir, os.path.join(workdir, 'ipa-rpms'),
+                              vm_dist(nested))
     results = []
     for key, path, tests in todo:
         gen = os.path.join(workdir, f'{key}.preset.yaml')

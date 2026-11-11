@@ -370,11 +370,17 @@ if [ -n "$MISSING" ] || [ "$QEMU_BUILD" = 1 ]; then
         done
         if [ "$QEMU_BUILD" = 1 ]; then
             IPA_RPMS="$BATCH_HOME/ipa-rpms"
-            echo "== building the IPA RPMs for the qemu VMs -> $IPA_RPMS"
+            # the VMs run the Fedora of their image, not the guest's: an RPM
+            # built for another release does not install on them
+            QEMU_DIST="$(python3 "$CI/tmt/tests/freeipa-env/adapt-preset.py" \
+                --dist "${QEMU_PRESETS[@]}")" \
+                || die "the qemu presets need VM images of one Fedora release"
+            echo "== building the IPA RPMs for the qemu VMs${QEMU_DIST:+ (Fedora $QEMU_DIST)} -> $IPA_RPMS"
             bash "$CI/images/build.sh" "${BUILD_SRC[@]}" --build-only \
                 --rpms-out "$IPA_RPMS" --tool podman \
                 ${COPR_ARGS[@]+"${COPR_ARGS[@]}"} \
                 ${BUILD_EXTRA[@]+"${BUILD_EXTRA[@]}"} \
+                ${QEMU_DIST:+--dist "$QEMU_DIST"} \
                 || die "building the IPA RPMs for the qemu VMs failed"
         fi
     fi

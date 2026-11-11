@@ -175,3 +175,26 @@ def test_testing_farm_refuses_a_preset_of_the_checkout(tmp_path):
     write(tmp_path, 'mine.yaml', 'name: mine\n')
     with pytest.raises(request.RequestError, match='file of the checkout'):
         _tf(tmp_path, {'presets': ['mine.yaml']})
+
+
+def test_the_rpms_are_built_for_the_fedora_of_the_vm_image(tmp_path):
+    a = write(tmp_path, 'a.yaml', yaml.safe_dump(
+        {'vm': {'image': 'containerdisk:ghcr.io/x/fedora-45:latest'}}))
+    b = write(tmp_path, 'b.yaml', yaml.safe_dump(
+        {'vm': {'image': '~/images/Fedora-Cloud-Base-Generic-45-1.4.qcow2'}}))
+    assert request.vm_dist([a, b]) == '45'
+
+
+def test_vm_images_of_two_releases_need_two_builds(tmp_path):
+    a = write(tmp_path, 'a.yaml', yaml.safe_dump(
+        {'vm': {'image': 'containerdisk:x/fedora-45:latest'}}))
+    b = write(tmp_path, 'b.yaml', yaml.safe_dump(
+        {'vm': {'image': '~/Fedora-Cloud-Base-Generic-44-1.7.qcow2'}}))
+    with pytest.raises(request.RequestError, match="one release"):
+        request.vm_dist([a, b])
+
+
+def test_an_image_name_without_a_release_gives_none(tmp_path):
+    p = write(tmp_path, 'a.yaml', yaml.safe_dump(
+        {'vm': {'image': '~/images/some.qcow2'}}))
+    assert request.vm_dist([p]) is None
