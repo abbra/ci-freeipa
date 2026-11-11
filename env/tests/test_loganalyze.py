@@ -58,3 +58,15 @@ def test_scan_cache_hit_then_invalidated_on_change(tmp_path):
     import os
     os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     assert la.scan_file(f, PAT, cache=cache)[1] == ['ERR two']
+
+
+def test_scan_cache_delete_drops_only_given_keys(tmp_path):
+    cache = la.ScanCache(str(tmp_path))
+    f = write(tmp_path / 'errors', 'ERR a\n')
+    other = re.compile('WARN')
+    la.scan_file(f, PAT, cache=cache)
+    la.scan_file(f, other, cache=cache)
+    keys = {k for k, _n, _c in cache.summary()}
+    assert keys == {la.cache_prefix(PAT) + '8', la.cache_prefix(other) + '8'}
+    cache.delete([la.cache_prefix(PAT) + '8'])
+    assert {k for k, _n, _c in cache.summary()} == {la.cache_prefix(other) + '8'}

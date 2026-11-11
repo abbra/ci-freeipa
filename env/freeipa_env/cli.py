@@ -23,7 +23,7 @@ from .vmbackend import VMBackendError
 from .nested_provider import NestedProvider, NestedError
 from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
-                         DEFAULT_LINES, DEFAULT_TAIL)
+                         DEFAULT_LINES, DEFAULT_TAIL, ScanCache, cache_prefix)
 from .htmlreport import render_html
 from . import summary as xsummary
 
@@ -321,6 +321,53 @@ def _list_queue_jobs(path):
         print(f'     workdir: {wd}')
     print(f'{ran} with logs, {not_run} without (not run or no env file)')
     return 0
+
+
+def _cache_label(key):
+    """Category name of a scan-cache key, or 'custom:PATTERN' for --pattern."""
+    for cat in CATEGORIES:
+        if key.startswith(cache_prefix(cat.match)):
+            return cat.name
+    return 'custom:' + key.split('\0')[0][:40]
+
+
+def cmd_cache(args):
+    """Show the scan cache of a workdir, or drop the cached scans of chosen
+    categories (--category, repeatable) or of everything (--all)."""
+    workdir = args.workdir
+    if not workdir and args.env:
+        workdir = default_workdir(load_spec(args.env))
+    if not workdir:
+        print('error: give an env file (to derive the default workdir) '
+              'or --workdir DIR', file=sys.stderr)
+        return 2
+    dbfile = os.path.join(workdir, '.scan-cache.sqlite')
+    if not os.path.isfile(dbfile):
+        print(f'no scan cache in {workdir}')
+        return 0
+    cache = ScanCache(workdir)
+    rows = cache.summary()
+    if args.action == 'show':
+        groups = {}
+        for key, files, chars in rows:
+            g = groups.setdefault(_cache_label(key), [0, 0])
+            g[0] += files
+            g[1] += chars or 0
+        print('%-24s%8s%14s' % ('category', 'files', 'chars'))
+        for label, (files, chars) in sorted(groups.items()):
+            print(f'{label:<24}{files:>8}{chars:>14}')
+        print(f'database: {os.path.getsize(dbfile)} bytes')
+        return 0
+    if not args.all and not args.category:
+        print('error: clear needs --category NAME or --all', file=sys.stderr)
+        return 2
+    wanted = set(args.category or [])
+    victims = [key for key, _f, _c in rows
+               if args.all or _cache_label(key) in wanted]
+    cache.delete(victims)
+    print(f'cleared {len(victims)} cached pattern(s) in {workdir}')
+    return 0
+
 
 
 def cmd_logs(args):
@@ -1207,6 +1254,25 @@ def main(argv=None):
                          'output: <workdir>/logs/results.html)')
     sp.set_defaults(fn=cmd_logs)
 
+    spc = sub.add_parser(
+        'cache',
+        help='show or clear the cached log scans of a workdir')
+    csub = spc.add_subparsers(dest='action', required=True)
+    csh = csub.add_parser('show', help='cached scans per category')
+    clr = csub.add_parser('clear', help='drop cached scans')
+    for cp in (csh, clr):
+        cp.add_argument('env', nargs='?', default=None,
+                        help='env.yaml (or preset) path')
+        cp.add_argument('--workdir', default=None,
+                        help='state/logs dir (default $XDG_STATE_HOME/'
+                             'freeipa-env/<env-name>)')
+        cp.set_defaults(fn=cmd_cache)
+    clr.add_argument('--category', action='append', choices=CATEGORY_NAMES,
+                     metavar='NAME',
+                     help=f'category to drop, repeatable; names: '
+                          f'{", ".join(CATEGORY_NAMES)}')
+    clr.add_argument('--all', action='store_true',
+                     help='drop every cached scan, including --pattern scans')
     sp = sub.add_parser(
         'tf-logs',
         help='fetch a Testing Farm request\'s job artifacts and parse them '

@@ -495,6 +495,10 @@ class LogStore:
 # ---------------------------------------------------------------------------
 # file / report scanning
 # ---------------------------------------------------------------------------
+def cache_prefix(pattern):
+    """Cache key prefix of a pattern; scan keys append the tail length."""
+    return f'{pattern.pattern}\0{pattern.flags}\0'
+
 
 class ScanCache:
     """Memo of scan_file results in <workdir>/.scan-cache.sqlite, keyed by
@@ -521,13 +525,24 @@ class ScanCache:
                          json.dumps(matched), json.dumps(tail)))
         self.db.commit()
 
+    def summary(self):
+        """(key, cached files, matched lines) per scanned pattern key."""
+        return self.db.execute('select key, count(*), sum(length(matched))'
+                               ' from scan group by key').fetchall()
+
+    def delete(self, keys):
+        self.db.executemany('delete from scan where key=?',
+                            [(k,) for k in keys])
+        self.db.commit()
+        self.db.execute('vacuum')
+
 
 def scan_file(path, pattern, tail_n=8, cache=None):
     """Return (total_lines, matched_lines, last tail_n lines). With a cache,
     only filtered scans are memoized; whole-file scans are not stored."""
     key = None
     if cache is not None and pattern is not None:
-        key = f'{pattern.pattern}\0{pattern.flags}\0{tail_n}'
+        key = cache_prefix(pattern) + str(tail_n)
         try:
             st = os.stat(path)
         except OSError:
