@@ -239,7 +239,7 @@ The user must be able to read `/dev/kvm`. For virgl, the user must also read and
 
 #### Guest packages
 
-Set `vm.guest_packages` in the nested spec. Each entry is a set name or a plain package name. `up` installs the packages with `dnf` on every VM, before the inner `up`.
+Set `vm.guest_packages` in the nested spec. Each entry is a set name, a plain package name, or `-name` to remove that set's or package's packages from the list. `up` installs the packages with `dnf` on every VM, before the inner `up`.
 
 - `gpu`: installs `mesa-dri-drivers` and `egl-utils`. Use it for the virgl `eglinfo` check.
 - `ipa-distro`: installs the FreeIPA server, client, and Python packages from the distribution, plus `firewalld`, which the FreeIPA test suite expects. It does not use COPR or a local build. It also installs `pytest-html==4.2.0` with pip.
@@ -253,6 +253,7 @@ vm:
 - On Fedora, `dnf` installs from the Fedora repositories.
 - On CentOS Stream, RHEL, Rocky Linux, and AlmaLinux, the install first enables EPEL and CRB. If CRB is not available, it uses `powertools`.
 - Plain names also work. For example: `guest_packages: [tmux]`.
+- Subtract with `-name`. For example, `guest_packages: [ipa-distro, -firewalld, -python3-pip]` keeps the `ipa-distro` set but drops those two packages. The `-` entry works in any position. The pip step of a set is not removed.
 - If a package name is wrong, `up` fails and prints the `dnf` output.
 - Only Fedora 45 is tested. The EL clones are not tested.
 - There are no guest desktop packages in any set yet.
