@@ -191,6 +191,7 @@ class LogStore:
         for h in self.hosts:
             cands.append(os.path.join(self.collected, h, 'ipa-env', 'logs',
                                       'nosetests.xml'))
+            cands.append(os.path.join(self.collected, h, 'nosetests.xml'))
         cands = [c for c in cands if os.path.isfile(c)]
         return self._dedupe_by_content(cands)
 
@@ -397,6 +398,11 @@ class LogStore:
             roots.append(ext)
         if cat.workflow:
             roots += self.workflow_tarballs(host)
+        for g in self.ptest_groups().values():
+            for e in g:
+                if e['host'] == host:
+                    roots += [os.path.join(e['path'], vm)
+                              for vm in sorted(os.listdir(e['path']))]
         return roots
 
     # --------------------------------------------------------------- selection
