@@ -38,6 +38,7 @@ class ExternalProvider:
         self.logdir = os.path.join(workdir, 'logs')
         os.makedirs(self.logdir, exist_ok=True)
         self.ok = True
+        self._write_ssh_config()
 
     def resolve_images(self):
         """External hosts run their own IPA (dev build, RPMs, ...); image
@@ -50,24 +51,37 @@ class ExternalProvider:
         it uniformly across providers."""
         return {}
 
+    def ssh_config_path(self):
+        return os.path.join(self.workdir, 'ssh_config')
+
+    def _write_ssh_config(self):
+        """One Host block per host, named by its FQDN, so `ssh <fqdn>` works
+        after `Include <path>` in the operator's ~/.ssh/config."""
+        lines = []
+        for h in self.spec.hosts:
+            lines += [f'Host {h.name}',
+                      f'  HostName {h.address}',
+                      f'  Port {h.port or 22}',
+                      f'  User {self.ssh_user}',
+                      f'  IdentityFile {self.ssh_key_path()}',
+                      '  BatchMode yes',
+                      '  ConnectTimeout 10',
+                      '  StrictHostKeyChecking accept-new']
+            if h.address == '127.0.0.1':
+                # shortcut: a loopback address is a forwarded port to a local
+                # nested VM, whose host keys are regenerated per run and whose
+                # ports get reused; upgrade if loopback hosts gain a stable key.
+                lines += ['  UserKnownHostsFile /dev/null', '  LogLevel ERROR']
+        with open(self.ssh_config_path(), 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        print(f'== ssh config: {self.ssh_config_path()} '
+              '(Include it in ~/.ssh/config to use `ssh <host>`)')
+
     def _ssh_opts(self, h):
-        args = ['-o', 'BatchMode=yes',
-                '-o', 'ConnectTimeout=10',
-                '-o', 'StrictHostKeyChecking=accept-new']
-        if h.address == '127.0.0.1':
-            # shortcut: a loopback address is a forwarded port to a local
-            # nested VM, whose host keys are regenerated per run and whose
-            # ports get reused; upgrade if loopback hosts gain a stable key.
-            args += ['-o', 'UserKnownHostsFile=/dev/null',
-                     '-o', 'LogLevel=ERROR']
-        key = self.ssh_key_path()
-        if key:
-            args += ['-i', key]
-        return args
+        return ['-F', self.ssh_config_path()]
 
     def _ssh_args(self, h):
-        return (['ssh'] + self._ssh_opts(h)
-                + ['-p', str(h.port or 22), f'{self.ssh_user}@{h.address}'])
+        return ['ssh'] + self._ssh_opts(h) + [h.name]
 
     def _ssh(self, h, cmd, timeout=15, check=True):
         args = self._ssh_args(h) + [cmd]
@@ -258,9 +272,7 @@ class ExternalProvider:
         self._scp(h, local, remote)
 
     def _scp(self, h, local, remote):
-        args = ['scp'] + self._ssh_opts(h) + [
-            '-P', str(h.port or 22), local,
-            f'{self.ssh_user}@{h.address}:{remote}']
+        args = ['scp'] + self._ssh_opts(h) + [local, f'{h.name}:{remote}']
         subprocess.run(args, check=True)
 
     def run_in_controller(self, cmd, env=None, log='run.log',
