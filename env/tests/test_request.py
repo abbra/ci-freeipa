@@ -74,6 +74,32 @@ def test_nested_preset_gets_the_srpm_of_the_checkout():
     assert 'srpms' not in doc['vm']          # the preset itself is not changed
 
 
+def test_nested_preset_gets_the_rpms_built_once_in_podman():
+    doc = {'provider': 'nested', 'vm': {'backend': 'qemu'}}
+    out = request.adapt(doc, '/src/dist/srpms', rpms_dir='/work/ipa-rpms')
+    assert out['vm']['rpms'] == ['/work/ipa-rpms/*.rpm']
+    assert 'srpms' not in out['vm']
+
+
+def test_rpms_alone_are_enough_for_a_nested_preset():
+    # tf-runner.sh has the RPMs and no SRPM directory to give
+    out = request.adapt({'provider': 'nested', 'vm': {}}, rpms_dir='/r')
+    assert out['vm']['rpms'] == ['/r/*.rpm']
+
+
+def test_a_podman_preset_ignores_the_rpms():
+    assert 'build' not in request.adapt({'name': 'x'}, rpms_dir='/r')
+
+
+def test_testing_farm_accepts_a_qemu_preset_it_builds_for(
+        tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(request.subprocess, 'run', lambda argv: (
+        seen.append(argv), type('R', (), {'returncode': 0})())[1])
+    assert _tf(tmp_path, {'presets': ['presets/qemu-smoke.yaml']}) == 0
+    assert seen
+
+
 def test_podman_preset_gets_a_build_block():
     assert request.adapt({'name': 'x'}, '/s')['build'] == {'srpm': '/s'}
 
@@ -133,7 +159,6 @@ def test_testing_farm_gets_a_queue_of_the_presets_and_the_commit(
 
 
 @pytest.mark.parametrize('req, kw, message', [
-    ({'presets': ['presets/qemu-smoke.yaml']}, {}, 'qemu preset'),
     ({'presets': [{'preset': 'presets/prci/gating/test_adtrust_install.yaml',
                    'tests': ['x']}]}, {}, '`tests` is not supported'),
     ({'presets': ['presets/prci/gating/test_adtrust_install.yaml']},

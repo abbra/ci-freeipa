@@ -291,13 +291,20 @@ build_srpm_from_clone() {
 # the dist-git tree SRPM build, or the upstream source build. The SRPM lanes
 # only need the SRPM when at least one channel image is absent (a batch whose
 # images are all pre-baked skips both the SRPM build and the bake).
+# A batch with qemu presets, and a source of IPA in the request (not
+# IPA-from-COPR/distro): build once, and the VMs install the RPMs.
+QEMU_BUILD=0
+if [ "${#QEMU_PRESETS[@]}" -gt 0 ] && [ -z "$IPA_FROM" ] \
+        && [ -n "$SRPM_URL$KOJI_TASK$DISTGIT$DISTGIT_DIR$FREEIPA_SRC$REPO_URL" ]; then
+    QEMU_BUILD=1
+fi
 MISSING=""
 for c in $CHANNELS; do
     if ! podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1; then
         MISSING="${MISSING:+$MISSING }$c"
     fi
 done
-if [ -n "$MISSING" ]; then
+if [ -n "$MISSING" ] || [ "$QEMU_BUILD" = 1 ]; then
     if [ -n "$IPA_FROM" ]; then
         # dnf lanes: no SRPM download/build; bake each missing channel image
         # with the IPA installed from the enabled COPR repos, or (distro)
@@ -361,6 +368,15 @@ if [ -n "$MISSING" ]; then
             podman image inspect "freeipa-ci/full:$c" >/dev/null 2>&1 \
                 || die "build succeeded but freeipa-ci/full:$c is still missing"
         done
+        if [ "$QEMU_BUILD" = 1 ]; then
+            IPA_RPMS="$BATCH_HOME/ipa-rpms"
+            echo "== building the IPA RPMs for the qemu VMs -> $IPA_RPMS"
+            bash "$CI/images/build.sh" "${BUILD_SRC[@]}" --build-only \
+                --rpms-out "$IPA_RPMS" --tool podman \
+                ${COPR_ARGS[@]+"${COPR_ARGS[@]}"} \
+                ${BUILD_EXTRA[@]+"${BUILD_EXTRA[@]}"} \
+                || die "building the IPA RPMs for the qemu VMs failed"
+        fi
     fi
 else
     if [ -n "$IPA_FROM" ]; then
@@ -368,6 +384,33 @@ else
     else
         echo "== all channel image(s) present: $(echo $CHANNELS); SRPM build skipped"
     fi
+fi
+
+# --- qemu presets get the IPA built above (vm.rpms) --------------------------
+# A qemu preset installs its IPA on its own VMs from packages; when this batch
+# builds FreeIPA (the guest cloned a branch, an SRPM or a Koji build came with
+# the request) the VMs install those RPMs instead. Each qemu preset is
+# copied to env/generated/tf-<key>.yaml with vm.rpms set and the job runs the
+# copy.
+if [ -n "${IPA_RPMS:-}" ]; then
+    NEW_JOB_LINES=""
+    while IFS=$'\t' read -r _K _P; do
+        [ -n "$_K" ] || continue
+        if is_qemu_preset "$CI/env/$_P"; then
+            mkdir -p "$CI/env/generated"
+            python3 "$CI/tmt/tests/freeipa-env/adapt-preset.py" \
+                "$CI/env/$_P" "$CI/env/generated/tf-$_K.yaml" \
+                --rpms "$IPA_RPMS" \
+                || die "cannot give $_P the built RPMs"
+            _P="generated/tf-$_K.yaml"
+            echo "== $_K: qemu VMs install the RPMs built here ($IPA_RPMS)"
+        fi
+        NEW_JOB_LINES="${NEW_JOB_LINES:+$NEW_JOB_LINES
+}$_K	$_P"
+    done <<EOF
+$JOB_LINES
+EOF
+    JOB_LINES="$NEW_JOB_LINES"
 fi
 
 # --- run each preset's recipe (per-preset staged results) -------------------

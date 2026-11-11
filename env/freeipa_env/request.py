@@ -84,21 +84,25 @@ def jobs(req, src):
     return out
 
 
-def adapt(doc, srpm_dir=None, tests=None):
+def adapt(doc, srpm_dir=None, tests=None, rpms_dir=None):
     """A copy of a preset that runs the given tests and, unless the preset
-    names its own build, installs the FreeIPA built from the checkout"""
+    names its own build, installs the FreeIPA built from the checkout: the
+    RPMs in `rpms_dir` on the VMs of a nested preset (built once, not on
+    every VM), the SRPM for a podman preset"""
     doc = copy.deepcopy(doc)
     if tests:
         doc.setdefault('run', {})['tests'] = list(tests)
-    if srpm_dir:
-        provider = doc.get('provider', 'podman')
-        if provider == 'nested':
-            vm = doc.setdefault('vm', {})
-            if not (vm.get('srpms') or vm.get('rpms')):
+    provider = doc.get('provider', 'podman')
+    if provider == 'nested' and (rpms_dir or srpm_dir):
+        vm = doc.setdefault('vm', {})
+        if not (vm.get('srpms') or vm.get('rpms')):
+            if rpms_dir:
+                vm['rpms'] = [os.path.join(rpms_dir, '*.rpm')]
+            else:
                 vm['srpms'] = [os.path.join(srpm_dir, '*.src.rpm')]
-        elif provider == 'podman' and not doc.get('build'):
-            doc['build'] = {'srpm': srpm_dir}
-        # an external preset tests its own IPA
+    elif provider == 'podman' and srpm_dir and not doc.get('build'):
+        doc['build'] = {'srpm': srpm_dir}
+    # an external preset tests its own IPA
     return doc
 
 
@@ -138,11 +142,20 @@ def _step(verb, preset, workdir):
 IMAGE = 'registry.fedoraproject.org/fedora:latest'
 
 
-def _is_qemu(path):
+def _is_nested(path):
     with open(path) as f:
-        doc = yaml.safe_load(f) or {}
-    return (doc.get('provider') == 'nested'
-            and (doc.get('vm') or {}).get('backend') == 'qemu')
+        return (yaml.safe_load(f) or {}).get('provider') == 'nested'
+
+
+def build_rpms(srpm_dir, out):
+    """The binary RPMs of the SRPM, built in podman (images/build.sh)"""
+    print(f'== building the RPMs of {srpm_dir} in podman', flush=True)
+    rc = subprocess.run([
+        os.path.join(CI_ROOT, 'images', 'build.sh'), '--srpm', srpm_dir,
+        '--build-only', '--rpms-out', out, '--tool', 'podman']).returncode
+    if rc or not glob.glob(os.path.join(out, '*.rpm')):
+        raise RequestError(f'building the RPMs failed (exit {rc})')
+    return out
 
 
 def testing_farm(req, todo, workdir, src, repo_url, ref, dry_run):
@@ -151,9 +164,9 @@ def testing_farm(req, todo, workdir, src, repo_url, ref, dry_run):
     The guest clones the FreeIPA repository under test, builds it, and runs
     the pinned plan of that repository, which finds the presets in the
     ci-freeipa it pins. So only presets of ci-freeipa run there, with the
-    tests they name, built from the pushed commit; a qemu preset needs
-    another plan (/tmt/plans/qemu of ci-freeipa) and installs its IPA from
-    packages, so it is not accepted here.
+    tests they name, built from the pushed commit. A qemu preset runs on the
+    same guest (the request asks for virtualization): tf-runner.sh builds
+    the RPMs in podman and the VMs install them (vm.rpms).
     """
     if not req['build']:
         raise RequestError('build: false is not supported on Testing Farm')
@@ -168,9 +181,6 @@ def testing_farm(req, todo, workdir, src, repo_url, ref, dry_run):
         if tests:
             raise RequestError(f'{key}: `tests` is not supported on '
                                f'Testing Farm')
-        if _is_qemu(path):
-            raise RequestError(f'{key}: a qemu preset does not run on this '
-                               f'plan; run it on the fork runner')
     os.makedirs(workdir, exist_ok=True)
     qfile = os.path.join(workdir, 'request-queue.yaml')
     with open(qfile, 'w') as f:
@@ -203,13 +213,19 @@ def run(request_file, src, workdir, image=IMAGE, dry_run=False,
     os.makedirs(workdir, exist_ok=True)
     srpm_dir = build_srpm(src, req.get('build_image') or image) \
         if req['build'] else None
+    # the VMs of a nested preset install RPMs: build them once in podman
+    # rather than on every VM (it needs more memory than a test VM has)
+    rpms_dir = None
+    if srpm_dir and any(_is_nested(p) for _k, p, _t in todo):
+        rpms_dir = build_rpms(srpm_dir, os.path.join(workdir, 'ipa-rpms'))
     results = []
     for key, path, tests in todo:
         gen = os.path.join(workdir, f'{key}.preset.yaml')
         with open(path) as f:
             doc = yaml.safe_load(f)
         with open(gen, 'w') as f:
-            yaml.safe_dump(adapt(doc, srpm_dir, tests), f, sort_keys=False)
+            yaml.safe_dump(adapt(doc, srpm_dir, tests, rpms_dir), f,
+                           sort_keys=False)
         wd = os.path.join(workdir, key)
         rc = _step('up', gen, wd)
         if rc == 0:

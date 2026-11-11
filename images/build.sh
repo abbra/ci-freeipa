@@ -94,6 +94,8 @@
 set -euo pipefail
 
 RPMS=
+RPMS_OUT=
+BUILD_ONLY=0
 SRPM=
 SHA=
 DIST=44
@@ -123,6 +125,8 @@ DISTARCH=x86_64
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rpms) RPMS="$2"; shift 2 ;;
+        --rpms-out) RPMS_OUT="$2"; shift 2 ;;
+        --build-only) BUILD_ONLY=1; shift ;;
         --srpm) SRPM="$2"; shift 2 ;;
         --sha) SHA="$2"; shift 2 ;;
         --dist) DIST="$2"; shift 2 ;;
@@ -328,6 +332,15 @@ if [[ -n "$IPA_FROM" ]]; then
 fi
 
 ls "$WORK/rpms"
+
+# the RPMs for something other than the full image (the qemu VMs of a
+# nested preset install them: vm.rpms)
+if [[ -n "$RPMS_OUT" ]]; then
+    mkdir -p "$RPMS_OUT"
+    cp "$WORK"/rpms/*.rpm "$RPMS_OUT"/
+    echo "==> RPMs copied to $RPMS_OUT"
+fi
+[[ "$BUILD_ONLY" == "1" ]] && exit 0
 
 # --- build the full image ----------------------------------------------------
 echo "==> Building full image $FULL_IMAGE"
