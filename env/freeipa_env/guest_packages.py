@@ -35,9 +35,10 @@ EL_PREP = ('. /etc/os-release && case "$ID" in '
            'dnf config-manager --set-enabled powertools; } ;; esac')
 
 
-def install_cmd(names):
-    """Shell command installing the sets and packages in `names`; packages
-    named by a `-name` entry are dropped whatever their position."""
+def install_cmd(names, copr=()):
+    """Shell command enabling the COPR repos in `copr` and installing the
+    sets and packages in `names`; packages named by a `-name` entry are
+    dropped whatever their position."""
     pkgs, pip, drop = [], [], set()
     for n in names:
         if n.startswith('-'):
@@ -47,6 +48,7 @@ def install_cmd(names):
         pip += PIP.get(n, [])
     pkgs = [p for p in dict.fromkeys(pkgs) if p not in drop]
     steps = [EL_PREP]
+    steps += [f'dnf -y copr enable {shlex.quote(r)}' for r in copr]
     if pkgs:
         steps.append('dnf -y install ' + ' '.join(shlex.quote(p) for p in pkgs))
     for p in dict.fromkeys(pip):

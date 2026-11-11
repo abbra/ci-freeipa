@@ -296,10 +296,17 @@ class NestedProvider:
             for h in ext.spec.hosts:
                 ext._ssh(h, 'bootc usroverlay', timeout=600)
         pkgs = self._cfg('guest_packages') or []
-        if pkgs:
-            for h in ext.spec.hosts:
-                ext._ssh(h, guest_packages.install_cmd(pkgs), timeout=3600)
-            print(f'== guest packages installed on {count} VM(s): {pkgs}')
+        copr = self._cfg('copr') or []
+        # a vm.vms entry named after a host may set its own copr list
+        over = {v.get('name'): v for v in self._cfg('vms') or []}
+        per = {h.name: over.get(h.name, {}).get('copr', copr)
+               for h in ext.spec.hosts}
+        for h in ext.spec.hosts:
+            if pkgs or per[h.name]:
+                ext._ssh(h, guest_packages.install_cmd(pkgs, per[h.name]),
+                         timeout=3600)
+        print(f'== guest setup on {count} VM(s): packages {pkgs}; copr '
+              + ', '.join(f'{n}={c}' for n, c in per.items()))
         ext.up()
         print(f'== nested environment {self.spec.name} is attached on '
               f'{count} VM(s)')

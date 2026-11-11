@@ -49,3 +49,9 @@ def test_no_dnf_step_when_everything_is_removed():
 def test_duplicate_packages_are_installed_once():
     pkgs = dnf_pkgs(gp.install_cmd(['gpu', 'mesa-dri-drivers']))
     assert pkgs.count('mesa-dri-drivers') == 1
+
+
+def test_copr_repos_are_enabled_before_the_install():
+    cmd = gp.install_cmd(['ipa-distro'], copr=['abbra/pqc'])
+    enable = cmd.index('dnf -y copr enable abbra/pqc')
+    assert enable < cmd.index('dnf -y install freeipa-server ')
