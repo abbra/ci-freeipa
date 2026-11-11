@@ -177,6 +177,14 @@ class LogStore:
     def __init__(self, workdir):
         self.workdir = workdir
         self.logdir = os.path.join(workdir, 'logs')
+        # A nested external env collects under <workdir>/inner/logs and
+        # `down` mirrors that into <workdir>/logs; when the mirror is missing
+        # (it failed, or the workdir was copied without it) read the inner
+        # tree, which holds the same files.
+        inner = os.path.join(workdir, 'inner', 'logs')
+        if (not os.path.isdir(os.path.join(self.logdir, 'collected'))
+                and os.path.isdir(os.path.join(inner, 'collected'))):
+            self.logdir = inner
         self.collected = os.path.join(self.logdir, 'collected')
         self.extractdir = os.path.join(self.logdir, 'extracted')
         self.scan_cache = ScanCache(workdir) if os.path.isdir(workdir) else None
