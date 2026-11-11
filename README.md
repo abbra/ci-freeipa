@@ -11,12 +11,13 @@ The FreeIPA source tree does not contain this code. It contains only a pinned tm
 Use these guides for specific tasks:
 
 - To test a FreeIPA worktree with an agent, read [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
-- To test the packages that a Fedora release ships, read [Test the packages Fedora ships](#test-the-packages-fedora-ships-the-default) and [ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md). You do not need a checkout, a build, or a COPR repository.
+- To test the packages that a Fedora release ships, read [Podman images: the packages Fedora ships](#podman-images-the-packages-fedora-ships-the-default) and [ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md). You do not need a checkout, a build, or a COPR repository.
 
 ## Contents
 
 - [Repository split](#repository-split)
 - [Commands](#commands)
+- [Where the IPA packages come from](#where-the-ipa-packages-come-from)
 - [Env file](#env-file)
 - [Nested provider](#nested-provider-get-a-vm-run-the-env-in-it)
 - [Artifacts](#artifacts)
@@ -26,8 +27,8 @@ Use these guides for specific tasks:
 - [Run queues](#run-queues-and-the-supervisor-queue)
 - [Runner transports](#runner-transports---runner)
 - [Fedora dist-git lane](#fedora-dist-git-lane-packaging-pr-ci)
-- [Test the packages Fedora ships](#test-the-packages-fedora-ships-the-default)
-- [Build the IPA RPMs](#build-the-ipa-rpms-ourselves)
+- [Podman images: the packages Fedora ships](#podman-images-the-packages-fedora-ships-the-default)
+- [Podman images: build the IPA RPMs](#podman-images-build-the-ipa-rpms-ourselves)
 - [Blend a preset](#blend-a-preset-or-queue-with-a-provider-setup-blend)
 - [Preset validation](#preset-validation-check)
 - [Notes](#notes)
@@ -80,8 +81,8 @@ freeipa-env list                      List the environments on this host.
 freeipa-env vms [PATTERN] [--stop [--yes]] List running qemu VMs and who owns each; stop them.
 freeipa-env prune [--yes] [--workdirs] Remove the environments that have nothing running.
 freeipa-env report [ENV.YAML] [--format md]  Make a self-contained results.html (or a Markdown results.md) from the artifacts.
-freeipa-env resolve ENV.YAML          Find the image references in the local image store. Read only.
-freeipa-env ensure ENV.YAML           Build the missing channel images for the env. Use Fedora packages, or build.srpm.
+freeipa-env resolve ENV.YAML          Podman provider: find the image references in the local image store. Read only.
+freeipa-env ensure ENV.YAML           Podman provider: build the missing channel images for the env. Use Fedora packages, or build.srpm.
 freeipa-env migrate PRCI.YAML         Make presets from a PRCI definition.
 freeipa-env queue run QUEUE.YAML --runner USER@HOST [...]   Run a queue.
 freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          Make a queue in PRCI order.
@@ -125,6 +126,19 @@ Several classes in one `run` share the containers. If an uninstall leaves state 
 `up` on a nested environment that already has VMs recorded in its `nested-state.json` is refused: a second `up` would overwrite that file and leave the first VMs running with nobody to stop them. Run `down` first.
 
 Stopping a VM leaves its directory (a disk image, 1 to 2 GB) under the qemu `state_dir`. `vms --stale` lists the directories of VMs that are not running and that no environment names, with their sizes; with `--purge` it deletes them (a dry run unless `--yes`). A directory changed in the last five minutes is skipped, because `up` may still be filling it. `vms --stop --purge --yes` also deletes the directories of the VMs it stops.
+
+## Where the IPA packages come from
+
+What the IPA under test is, and how it gets there, depends on the provider. Only the podman provider uses a **container image**. The sections on channels, `resolve`, `ensure`, `images/build.sh`, `--srpm`, `build:` and `--ipa-from-*` describe those images. They do not apply to the other providers.
+
+| Provider | The IPA runs in | The IPA packages come from |
+|---|---|---|
+| `podman` | containers on this host | a `freeipa-ci/full:<channel>` image. `images/build.sh` bakes it with dnf from the distribution or a COPR, or from RPMs you give it, or from an SRPM it compiles. The preset's `image:` names a channel. |
+| `external` | hosts you provide | what is already installed on them. `freeipa-env` installs and builds nothing. |
+| `nested`, `inner: podman` | containers inside a VM | the same channel image, made on the VM. |
+| `nested`, `inner: external` | the VMs themselves | the `vm:` settings, installed by dnf in each VM: `guest_packages`, `copr`, `rpms` and `srpms`. No image is built. |
+
+A queue runner follows each preset. A podman job needs a channel image on the runner. A nested-qemu job needs none: see [Running the jobs in qemu VMs](#running-the-jobs-in-qemu-vms).
 
 ## Env file
 
@@ -560,7 +574,9 @@ A queue file has a `jobs:` list. Each entry is one of these:
 - A directory path that ends with `/`. It expands to all presets in that directory, sorted.
 - A dict with `preset` or `dir`, and an optional `note`.
 
-### Image references are channels
+### Image references are channels (podman provider)
+
+This section and the three that follow it describe the podman provider, the only one that runs from a prebuilt image. See [Where the IPA packages come from](#where-the-ipa-packages-come-from) for the others.
 
 A preset does not name a build. It names a **channel**:
 
@@ -593,7 +609,7 @@ For each run, the supervisor does these steps:
 
 1. Checks every preset. It parses each file and checks that it exists.
 2. Checks each runner for SSH and podman. Copies the local ci-freeipa tree to `--remote-ci`. The default is `/root/freeipa-ci/ci`.
-3. Asks each runner to find the images for each preset. This runs `freeipa-env resolve` on the runner. If an image is missing, the run stops before any job starts. The results are saved per runner in `summary.md`.
+3. Asks each runner to find the channel image for each podman preset. A nested-qemu preset needs none. This runs `freeipa-env resolve` on the runner. If an image is missing, the run stops before any job starts. The results are saved per runner in `summary.md`.
 4. Schedules the jobs. Each runner takes the next job from the front of the list. It runs one job at a time. Each job runs `up`, then `run`, then `down`. Each job has a remote timeout. The default is 4 hours. Each job uses the workdir `/root/jobs/<job-key>`.
 5. Writes `summary.tsv`, `summary.md`, and a transcript for each job, in `--outdir`. The default is `./<queue>.queue`. The exit code is 0 only when every job passes.
 
@@ -612,7 +628,7 @@ A runner is a host that runs queued jobs. It needs podman, systemd, and a copy o
 |---|---|---|
 | `user@host[:port]` (default) | **SSH** | A runner that you set up. The ci-freeipa tree is copied to it. `up`, `run`, and `down` run on the runner. |
 | `local` | **Local** | The control node is the runner. No SSH is used. The same steps run as local processes. You need podman on the control node. |
-| `testing-farm` | **TF** | No SSH and no host you set up. The jobs of one runner run as **one Testing Farm request**. The guest is set up once. It builds the SRPM and the channel images once. Then it runs the presets in order. |
+| `testing-farm` | **TF** | No SSH and no host you set up. The jobs of one runner run as **one Testing Farm request**. The guest is set up once. For podman jobs it builds the SRPM and the channel images once, then runs the presets in order. A nested-qemu job builds no image. |
 
 All three transports use the same job steps: `up`, `run`, and `down`. Each job has a timeout. `down` has no timeout and must finish. The output files (`summary.tsv`, `summary.md`, and the transcripts) have the same form for each transport.
 
@@ -630,7 +646,7 @@ Testing Farm does these things:
 - It clones the **FreeIPA repository under test**.
 - It runs the pinned plan from that checkout. The plan finds this repository's test at the pinned ref.
 
-The guest builds the SRPM and each channel image once. Then it runs the presets in order, and it reuses the images.
+For podman jobs, the guest builds the SRPM and each channel image once. Then it runs the presets in order, and it reuses the images. A nested-qemu job builds no image: see [Running the jobs in qemu VMs](#running-the-jobs-in-qemu-vms).
 
 A preset passes only when these two things are true:
 
@@ -760,6 +776,8 @@ freeipa-env queue run queues/qemu-copr.yaml --runner testing-farm \
 
 ## Fedora dist-git lane (packaging PR CI)
 
+This lane runs podman jobs: it makes the channel image from the scratch build.
+
 Fedora dist-git CI (Packit) runs a **Koji scratch build** for each dist-git PR. It runs the scratch build before the tests. It passes the task ID to the test request as `KOJI_TASK_ID`.
 
 The test uses that build. The file `tmt/tests/freeipa-env/koji-rpms.py` reads the `buildArch` subtask results of the task. It downloads the binary RPMs from kojipkgs. It downloads x86_64 and noarch RPMs. It leaves out debuginfo and debugsource.
@@ -818,9 +836,9 @@ The guest chooses the source in this order:
 3. `FREEIPA_DISTGIT`
 4. The upstream clone and SRPM build
 
-## Test the packages Fedora ships (the default)
+## Podman images: the packages Fedora ships (the default)
 
-If you do not name a source, the image uses the packages from the distribution. A source is named by `--srpm` or `build.srpm`, by `--rpms`, or by `--copr`. `--copr` alone installs from that COPR. See the end of this section.
+This section is about the podman provider's channel image. If you do not name a source, the image uses the packages from the distribution. A source is named by `--srpm` or `build.srpm`, by `--rpms`, or by `--copr`. `--copr` alone installs from that COPR. See the end of this section.
 
 The image is made from the distribution's own packages. This tests a Fedora release as it was released.
 
@@ -862,9 +880,9 @@ The image is a snapshot of the repositories at bake time. To get newer updates, 
 
 To use builds from a COPR repository, add `--copr OWNER/PROJECT` to any command above. You can repeat it. `--ipa-from-copr` states this choice. dnf then finds the IPA packages in the COPR and in the distribution.
 
-## Build the IPA RPMs ourselves
+## Podman images: build the IPA RPMs ourselves
 
-By default, `freeipa-env` uses IPA RPMs. A build farm makes them. The RPMs go into a `freeipa-ci/full` image, and you distribute that image.
+This section is about the podman provider's channel image. By default, `freeipa-env` uses IPA RPMs. A build farm makes them. The RPMs go into a `freeipa-ci/full` image, and you distribute that image.
 
 A problem can happen with these RPMs. Their distro dependencies can change after the snapshot. For example, a newer samba enters the repository. The old IPA RPM requires the old samba, which no longer resolves. The image build then fails. The cause is not the IPA change under test.
 
