@@ -4,6 +4,7 @@
 category for CI issue triage; see loganalyze.py."""
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from .envspec import EnvSpec, EnvSpecError, RunSpec
 from .queue import QueueSpec
 from .podman_provider import PodmanProvider, PodmanError
 from .external_provider import ExternalProvider, ExternalError
-from .vmbackend import VMBackendError, live_qemu_vms
+from .vmbackend import VMBackendError, live_qemu_vms, stop_qemu
 from .nested_provider import NestedProvider, NestedError
 from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
@@ -763,7 +764,9 @@ def cmd_list(args):
 def cmd_vms(args):
     """Running qemu VMs, each with the environment that owns it. A VM no
     environment's nested-state.json names is an orphan (its `up` was
-    repeated, or its workdir was removed); stop it with `kill <pid>`."""
+    repeated, or its workdir was removed). Patterns (globs on environment
+    name, workdir, VM id, or `orphan`) pick VMs; --stop stops them, as a dry
+    run unless --yes."""
     owner = {}
     for env in sorted(os.listdir(_state_dir())
                       if os.path.isdir(_state_dir()) else []):
@@ -776,13 +779,32 @@ def cmd_vms(args):
         for v in vms:
             p = v.get('meta', {}).get('private', {})
             owner[v['id']] = (env, p.get('name', '-'), p.get('ip', '-'))
-    live = live_qemu_vms(args.qemu_dir)
-    for vm_id, pid in sorted(live.items(),
+    rows = []
+    for vm_id, pid in sorted(live_qemu_vms(args.qemu_dir).items(),
                              key=lambda kv: owner.get(kv[0], ('~',))):
-        env, name, ip = owner.get(vm_id, ('(orphan)', '-', '-'))
+        env, name, ip = owner.get(vm_id, (None, '-', '-'))
+        keys = [vm_id, 'orphan'] if env is None else [
+            vm_id, env, os.path.join(_state_dir(), env)]
+        if args.match and not any(fnmatch.fnmatch(k, pat)
+                                  for k in keys for pat in args.match):
+            continue
+        rows.append((vm_id, pid, name, ip, env or '(orphan)'))
+    for vm_id, pid, name, ip, env in rows:
         print(f'{vm_id:22s} {pid:>8d} {name:10s} {ip:15s} {env}')
-    if not live:
-        print('no running VMs')
+    if not rows:
+        print('no running VMs' + (' match' if args.match else ''))
+    if not args.stop:
+        return 0
+    if not args.yes:
+        print(f'== dry run: {len(rows)} VM(s) would be stopped '
+              f'(--yes to stop)')
+        return 0
+    for vm_id, pid, *_ in rows:
+        try:
+            stop_qemu(pid)
+        except ProcessLookupError:
+            pass
+        print(f'== stopped {vm_id}')
     return 0
 
 
@@ -1242,8 +1264,15 @@ def main(argv=None):
     sp.set_defaults(fn=cmd_list)
 
     sp = sub.add_parser(
-        'vms', help='running qemu VMs and the environment each belongs to; '
-                    'one without an environment is an orphan')
+        'vms', help='running qemu VMs and the environment each belongs to '
+                    '(orphan: none does); --stop stops them')
+    sp.add_argument('match', nargs='*', metavar='PATTERN',
+                    help='only VMs whose environment name, workdir or id '
+                         'matches this glob, or `orphan`')
+    sp.add_argument('--stop', action='store_true',
+                    help='stop the listed VMs (all when no PATTERN)')
+    sp.add_argument('--yes', action='store_true',
+                    help='really stop; without it --stop is a dry run')
     sp.add_argument('--qemu-dir', default='~/.cache/freeipa-ci/qemu',
                     help='qemu backend state_dir (default: %(default)s)')
     sp.set_defaults(fn=cmd_vms)

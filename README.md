@@ -76,7 +76,7 @@ freeipa-env summary ENV.YAML          Show the result of each test in the last r
 freeipa-env overlay ENV.YAML SRC:/DST Copy files into every container. Each copy is checked with a hash.
 freeipa-env reset ENV.YAML            Create fresh containers from the same spec. Keep the old logs.
 freeipa-env list                      List the environments on this host.
-freeipa-env vms                       List the running qemu VMs and who owns each.
+freeipa-env vms [PATTERN] [--stop [--yes]] List running qemu VMs and who owns each; stop them.
 freeipa-env prune [--yes] [--workdirs] Remove the environments that have nothing running.
 freeipa-env report [ENV.YAML]         Make a self-contained results.html from the artifacts.
 freeipa-env resolve ENV.YAML          Find the image references in the local image store. Read only.
@@ -116,7 +116,7 @@ Several classes in one `run` share the containers. If an uninstall leaves state 
 
 `list` shows every environment on the host. It reads the podman networks, so it also shows orphans whose workdir is gone. `prune` removes the stopped environments. It is a dry run unless you add `--yes`.
 
-`vms` lists the running qemu VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when `up` is run again, or a workdir is removed. Stop a VM with `kill PID`; `down` stops the ones an environment still owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
+`vms` lists the running qemu VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when `up` is run again, or a workdir is removed. Give one or more glob patterns to pick VMs by environment name, workdir path or VM id, or `orphan` for the unowned ones. `--stop` stops the VMs listed (all of them when you give no pattern). It is a dry run unless you add `--yes`. For example, `vms 'ci-*' --stop --yes`. It stops the qemu process only: disks stay, and `down` still collects logs and removes them for a VM an environment owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
 
 ## Env file
 

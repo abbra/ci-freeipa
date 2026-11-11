@@ -507,7 +507,7 @@ def live_qemu_vms(state_dir: str = '~/.cache/freeipa-ci/qemu') -> dict:
     return found
 
 
-def _stop_qemu(pid: int, grace: int = 30):
+def stop_qemu(pid: int, grace: int = 30):
     os.kill(pid, signal.SIGTERM)
     deadline = time.time() + grace
     while time.time() < deadline:
@@ -734,7 +734,7 @@ class QemuBackend(VMBackend):
             raise VMBackendError(f'qemu backend: no qemu state for {handle.target}')
         pid = _qemu_pid(q['pidfile'], handle.id)
         if pid:
-            _stop_qemu(pid)
+            stop_qemu(pid)
         for f in ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid'):
             try:
                 os.remove(os.path.join(q['dir'], f))
