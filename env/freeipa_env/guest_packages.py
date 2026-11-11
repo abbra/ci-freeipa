@@ -1,7 +1,8 @@
 """Packages to install on nested VMs before the inner run.
 
 `vm.guest_packages` in a nested spec lists set names (`gpu`, `ipa-distro`)
-and/or plain package names. Works on Fedora, CentOS Stream, RHEL and the
+and/or plain package names; a `-name` entry removes that set's (or
+package's) packages from the result. Works on Fedora, CentOS Stream, RHEL and the
 EL clones (dnf); EL hosts get EPEL and CRB enabled first.
 """
 import shlex
@@ -35,13 +36,19 @@ EL_PREP = ('. /etc/os-release && case "$ID" in '
 
 
 def install_cmd(names):
-    """Shell command installing the sets and packages in `names`."""
-    pkgs, pip = [], []
+    """Shell command installing the sets and packages in `names`; packages
+    named by a `-name` entry are dropped whatever their position."""
+    pkgs, pip, drop = [], [], set()
     for n in names:
+        if n.startswith('-'):
+            drop.update(SETS.get(n[1:], [n[1:]]))
+            continue
         pkgs += SETS.get(n, [n])
         pip += PIP.get(n, [])
-    pkgs = list(dict.fromkeys(pkgs))
-    steps = [EL_PREP, 'dnf -y install ' + ' '.join(shlex.quote(p) for p in pkgs)]
+    pkgs = [p for p in dict.fromkeys(pkgs) if p not in drop]
+    steps = [EL_PREP]
+    if pkgs:
+        steps.append('dnf -y install ' + ' '.join(shlex.quote(p) for p in pkgs))
     for p in dict.fromkeys(pip):
         q = shlex.quote(p)
         steps.append(f'python3 -m pip install {q} || '
