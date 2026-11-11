@@ -236,6 +236,14 @@ class NestedProvider:
 
     # ------------------------------------------------------------------ up/down
     def up(self):
+        state = self._load_state()
+        if state and state.get('vms'):
+            # a second `up` would overwrite the state file and orphan these
+            ids = ', '.join(v['id'] for v in state['vms'])
+            raise NestedError(
+                f'{self.spec.name} already has VMs ({ids}); run '
+                f'`freeipa-env down` on it first (`freeipa-env vms` lists '
+                f'the running ones)')
         if self.inner_type == 'external':
             return self._up_external()
         count = int(self._cfg('count', 1) or 1)

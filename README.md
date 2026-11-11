@@ -120,7 +120,11 @@ Several classes in one `run` share the containers. If an uninstall leaves state 
 
 `list` shows every environment on the host. It reads the podman networks, so it also shows orphans whose workdir is gone. `prune` removes the stopped environments. It is a dry run unless you add `--yes`.
 
-`vms` lists the running qemu VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when `up` is run again, or a workdir is removed. Give one or more glob patterns to pick VMs by environment name, workdir path or VM id, or `orphan` for the unowned ones. `--stop` stops the VMs listed (all of them when you give no pattern). It is a dry run unless you add `--yes`. For example, `vms 'ci-*' --stop --yes`. It stops the qemu process only: disks stay, and `down` still collects logs and removes them for a VM an environment owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
+`vms` lists the running qemu VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when a workdir is removed or its state file is lost. Give one or more glob patterns to pick VMs by environment name, workdir path or VM id, or `orphan` for the unowned ones. `--stop` stops the VMs listed (all of them when you give no pattern). It is a dry run unless you add `--yes`. For example, `vms 'ci-*' --stop --yes`. It stops the qemu process only: disks stay, and `down` still collects logs and removes them for a VM an environment owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
+
+`up` on a nested environment that already has VMs recorded in its `nested-state.json` is refused: a second `up` would overwrite that file and leave the first VMs running with nobody to stop them. Run `down` first.
+
+Stopping a VM leaves its directory (a disk image, 1 to 2 GB) under the qemu `state_dir`. `vms --stale` lists the directories of VMs that are not running and that no environment names, with their sizes; with `--purge` it deletes them (a dry run unless `--yes`). A directory changed in the last five minutes is skipped, because `up` may still be filling it. `vms --stop --purge --yes` also deletes the directories of the VMs it stops.
 
 ## Env file
 

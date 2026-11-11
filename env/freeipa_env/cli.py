@@ -857,12 +857,49 @@ def cmd_list(args):
     return 0
 
 
+def _tree_bytes(path):
+    return sum(os.path.getsize(os.path.join(b, n))
+               for b, _d, names in os.walk(path) for n in names
+               if os.path.isfile(os.path.join(b, n)))
+
+
+def _stale_vms(root, live, owner, args):
+    """The directories of VMs that are not running and that no environment
+    names: what a stopped orphan, or a `down` that could not clean up, leaves
+    behind (a disk image each). A directory touched in the last five minutes
+    is skipped, since `up` may still be filling it."""
+    stale = []
+    for d in sorted(os.listdir(root) if os.path.isdir(root) else []):
+        path = os.path.join(root, d)
+        if (d in live or d in owner or not os.path.isdir(path)
+                or time.time() - os.path.getmtime(path) < 300):
+            continue
+        stale.append((d, path, _tree_bytes(path)))
+    for d, _path, size in stale:
+        print(f'{d:22s} {size / 2**20:8.0f} MB')
+    print(f'{len(stale)} stale dir(s), '
+          f'{sum(s for _d, _p, s in stale) / 2**30:.1f} GB')
+    if not args.purge:
+        return 0
+    if not args.yes:
+        print('== dry run: nothing deleted (--yes to delete)')
+        return 0
+    for _d, path, _size in stale:
+        shutil.rmtree(path, ignore_errors=True)
+    print(f'== deleted {len(stale)} dir(s)')
+    return 0
+
+
 def cmd_vms(args):
     """Running qemu VMs, each with the environment that owns it. A VM no
     environment's nested-state.json names is an orphan (its `up` was
     repeated, or its workdir was removed). Patterns (globs on environment
     name, workdir, VM id, or `orphan`) pick VMs; --stop stops them, as a dry
-    run unless --yes."""
+    run unless --yes. --stale lists the leftover directories of VMs that are
+    gone; --purge deletes them (or, with --stop, those of the VMs stopped)."""
+    if args.purge and not (args.stop or args.stale):
+        print('error: --purge goes with --stale or --stop', file=sys.stderr)
+        return 2
     owner = {}
     for env in sorted(os.listdir(_state_dir())
                       if os.path.isdir(_state_dir()) else []):
@@ -875,8 +912,12 @@ def cmd_vms(args):
         for v in vms:
             p = v.get('meta', {}).get('private', {})
             owner[v['id']] = (env, p.get('name', '-'), p.get('ip', '-'))
+    live = live_qemu_vms(args.qemu_dir)
+    root = os.path.expanduser(args.qemu_dir)
+    if args.stale:
+        return _stale_vms(root, live, owner, args)
     rows = []
-    for vm_id, pid in sorted(live_qemu_vms(args.qemu_dir).items(),
+    for vm_id, pid in sorted(live.items(),
                              key=lambda kv: owner.get(kv[0], ('~',))):
         env, name, ip = owner.get(vm_id, (None, '-', '-'))
         keys = [vm_id, 'orphan'] if env is None else [
@@ -901,6 +942,8 @@ def cmd_vms(args):
         except ProcessLookupError:
             pass
         print(f'== stopped {vm_id}')
+        if args.purge:
+            shutil.rmtree(os.path.join(root, vm_id), ignore_errors=True)
     return 0
 
 
@@ -1368,7 +1411,14 @@ def main(argv=None):
     sp.add_argument('--stop', action='store_true',
                     help='stop the listed VMs (all when no PATTERN)')
     sp.add_argument('--yes', action='store_true',
-                    help='really stop; without it --stop is a dry run')
+                    help='really stop or delete; without it this is a dry '
+                         'run')
+    sp.add_argument('--stale', action='store_true',
+                    help='list the leftover directories of VMs that are '
+                         'not running and that no environment names')
+    sp.add_argument('--purge', action='store_true',
+                    help='with --stale: delete those directories; with '
+                         '--stop: also delete the stopped VMs\' directories')
     sp.add_argument('--qemu-dir', default='~/.cache/freeipa-ci/qemu',
                     help='qemu backend state_dir (default: %(default)s)')
     sp.set_defaults(fn=cmd_vms)
