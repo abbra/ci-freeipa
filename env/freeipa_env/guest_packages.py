@@ -14,6 +14,7 @@ SETS = {
         'freeipa-server', 'freeipa-server-common', 'freeipa-server-dns',
         'freeipa-server-encrypted-dns', 'freeipa-server-trust-ad',
         'freeipa-client', 'freeipa-client-common', 'freeipa-client-encrypted-dns',
+        'firewalld',
         'freeipa-client-samba', 'freeipa-client-epn', 'freeipa-common',
         'freeipa-python-compat', 'freeipa-selinux', 'freeipa-selinux-nfast',
         'freeipa-selinux-luna', 'python3-ipaserver', 'python3-ipaclient',

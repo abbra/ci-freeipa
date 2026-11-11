@@ -242,7 +242,7 @@ The user must be able to read `/dev/kvm`. For virgl, the user must also read and
 Set `vm.guest_packages` in the nested spec. Each entry is a set name or a plain package name. `up` installs the packages with `dnf` on every VM, before the inner `up`.
 
 - `gpu`: installs `mesa-dri-drivers` and `egl-utils`. Use it for the virgl `eglinfo` check.
-- `ipa-distro`: installs the FreeIPA server, client, and Python packages from the distribution. It does not use COPR or a local build. It also installs `pytest-html==4.2.0` with pip.
+- `ipa-distro`: installs the FreeIPA server, client, and Python packages from the distribution, plus `firewalld`, which the FreeIPA test suite expects. It does not use COPR or a local build. It also installs `pytest-html==4.2.0` with pip.
 
 ```yaml
 vm:
