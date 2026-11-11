@@ -122,6 +122,9 @@ class EnvSpec:
     # run the inner provider (default podman) inside it
     inner: Optional[str] = None
     vm: Optional[dict] = None
+    # ssh key the framework uses to reach every host ({type, bits}); the
+    # external provider generates it on the master. type is an ssh-keygen -t name.
+    framework_key: Optional[dict] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     # Defaults mirror ipatests/azure/templates/variables-fedora.yml.
@@ -162,6 +165,15 @@ class EnvSpec:
             # the SRPM path is consumed on the control node as an argv
             # element (no shell), so expand a leading ~ here
             spec.build['srpm'] = os.path.expanduser(spec.build['srpm'])
+        if spec.framework_key is not None:
+            fk = spec.framework_key
+            if not isinstance(fk, dict):
+                raise EnvSpecError('framework_key: must be a mapping')
+            unknown = set(fk) - {'type', 'bits'}
+            if unknown:
+                raise EnvSpecError(f'framework_key: unknown keys {sorted(unknown)}')
+            if not isinstance(fk.get('type', 'ed25519'), str):
+                raise EnvSpecError('framework_key: type must be a ssh-keygen -t name')
         if spec.provider not in ('podman', 'external', 'nested'):
             raise EnvSpecError(f'provider must be podman|external|nested, '
                                f'got {spec.provider!r}')

@@ -297,6 +297,21 @@ These rules apply:
 
 `run` and `show` use the same provider. The ci-freeipa tree is not copied to the VMs. The example is `env/presets/nested-qemu-external.yaml`.
 
+### Framework SSH key
+
+The framework runs on the master and SSHes to every host as root. `up` generates that key on the master at `/root/.ipa/framework_key` and authorizes its public key on each host. It also writes `/etc/hosts` entries for every host on every host.
+
+Set `framework_key` in the env file to choose the key. `type` is passed to `ssh-keygen -t` unchanged, so any type the master's OpenSSH supports works (`ed25519`, `rsa`, `ecdsa`, `ecdsa-sk`, ...):
+
+```yaml
+framework_key: {type: rsa, bits: 3072}   # optional bits: passed as ssh-keygen -b
+```
+
+- Without `framework_key`, the default is ed25519. With `fips: true`, the default is rsa.
+- The key is created only if `/root/.ipa/framework_key` is absent. Changing `type` on an existing master does not regenerate it. Remove the file on the master first.
+- A type the host does not support fails in `ssh-keygen` on the master, during `up`.
+
+
 ### bootc VMs
 
 For a bootc host, set `vm.bootc: true`. `up` then runs `bootc usroverlay` on each VM. It runs this before `guest_packages`, so `dnf` can install into `/usr`.

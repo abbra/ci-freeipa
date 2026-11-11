@@ -144,9 +144,50 @@ class ExternalProvider:
             self._check_host(h)
         if not self.ok:
             raise ExternalError('attach validation failed')
+
         cfg = self._write_config()
+        self._hosts_entries()
+        self._framework_key()
+        self._scp(self.spec.master,
+                  os.path.join(self.workdir, 'ipa-test-config.yaml'),
+                  '/root/.ipa/ipa-test-config.yaml')
         print(f'== attached to environment {self.spec.name}')
         return cfg
+
+    def _hosts_entries(self):
+        """Hosts reach each other by FQDN (the framework ssh's from the
+        master to the replica by name); make every host's name resolvable on all hosts.
+        The FQDN must be the first name on the IP line: ipa-replica-install
+        reverse-resolves the master's IP and compares against it."""
+        for t in self.spec.hosts:
+            fqdn = t.name if t.name.endswith('.' + self.spec.domain) \
+                else f'{t.name}.{self.spec.domain}'
+            ip, short = t.ip or t.address, fqdn.split('.')[0]
+            for h in self.spec.hosts:
+                self._ssh(h, f"sed -i '/^{ip} /d; /[[:space:]]{fqdn}\\([[:space:]]\\|$\\)/d' /etc/hosts && "
+                             f"echo '{ip} {fqdn} {short}' >> /etc/hosts")
+
+    def _keygen_cmd(self):
+        """Guarded ssh-keygen for the framework key. The type is passed to
+        `ssh-keygen -t` unchanged, so the host decides what it supports.
+        Default ed25519, or rsa under fips."""
+        fk = self.spec.framework_key or {}
+        kind = fk.get('type', 'rsa' if self.spec.fips else 'ed25519')
+        size = f" -b {fk['bits']}" if 'bits' in fk else ''
+        return ('{ [ -f /root/.ipa/framework_key ] || '
+                f'ssh-keygen -q -t {shlex.quote(kind)}{size} -N "" -f /root/.ipa/framework_key; }}')
+
+    def _framework_key(self):
+        """The framework runs on the master and ssh's to every host as root
+        with a key that must exist on the master; generate it there and
+        authorize its public key on each host."""
+        m = self.spec.master
+        self._ssh(m, 'mkdir -p /root/.ipa && ' + self._keygen_cmd())
+        _, pub = self._ssh(m, 'cat /root/.ipa/framework_key.pub')
+        for h in self.spec.hosts:
+            self._ssh(h, 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && '
+                      f'grep -qxF "{pub}" /root/.ssh/authorized_keys || '
+                      f'echo "{pub}" >> /root/.ssh/authorized_keys')
 
     def _write_config(self):
         import yaml
@@ -156,8 +197,6 @@ class ExternalProvider:
             hosts.append({
                 'name': h.name,
                 'role': role,
-                'type': 'IPA' if role in ('master', 'replica', 'client')
-                         else role.upper(),
                 'ip': h.ip or h.address,
             })
         cfg = {
@@ -168,7 +207,7 @@ class ExternalProvider:
             'dirman_password': self.spec.dirman_password,
             'domain_level': self.spec.domain_level,
             'dns_forwarder': self.spec.dns_forwarder,
-            'root_ssh_key_filename': self.ssh_key_path(),
+            'root_ssh_key_filename': '/root/.ipa/framework_key',
             'domains': [{'name': self.spec.domain, 'type': 'IPA',
                          'hosts': hosts}],
         }
