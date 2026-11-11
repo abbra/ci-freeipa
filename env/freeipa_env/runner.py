@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import time
 
+from . import queue as _queue
 from .queue import ENVROOT
 
 REPO_CI_DIR = os.path.dirname(ENVROOT)  # the ci-freeipa tree root
@@ -58,6 +59,12 @@ class Runner:
 
     def check(self):
         raise NotImplementedError
+
+    def ship_generated(self, remote_ci):
+        """Copy the generated presets, which `blend` keeps in the cache, into
+        the runner's copy of the tree: the jobs look for env/generated/..."""
+        if os.path.isdir(_queue.GENERATED):
+            self.ship_file(_queue.GENERATED, f'{remote_ci}/env/generated')
 
     def bootstrap(self, remote_ci):
         raise NotImplementedError
@@ -162,6 +169,7 @@ class SshRunner(Runner):
         """rsync the local ci-freeipa tree to the runner (``~/...`` expands
         remotely against the ssh user's home)."""
         self._rsync(REPO_CI_DIR + '/', f'{remote_ci}/')
+        self.ship_generated(remote_ci)
 
     def ship_file(self, local, remote_dir):
         src = local if not os.path.isdir(local) else local + '/'
@@ -224,6 +232,7 @@ class LocalRunner(Runner):
         except OSError as e:
             raise RunnerTransportError(
                 f'local runner: copy to {dst} failed: {e}')
+        self.ship_generated(remote_ci)
 
     def ship_file(self, local, remote_dir):
         dst = self._p(remote_dir)

@@ -1722,7 +1722,8 @@ def main(argv=None):
                       help='output queue file (default: print to stdout)')
     qgen.set_defaults(fn=cmd_queue)
     sp = sub.add_parser(
-        'blend', help='generate a preset or queue (env/generated/NAME.yaml) '
+        'blend', help='generate a preset or queue '
+                      '(~/.cache/freeipa-ci/generated/NAME.yaml) '
                       'from a base, a provider setup and a test selection; '
                       'then run it with `run` or `queue run`')
     sp.add_argument('base', help='base preset or queue YAML')

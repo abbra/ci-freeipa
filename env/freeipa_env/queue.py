@@ -25,12 +25,29 @@ import yaml
 
 ENVROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Presets and queues that `blend` writes. They are outputs, not sources, so
+# they live in the cache; a queue names them as generated/<name>/<job>.yaml,
+# relative to env/, and the runners ship this directory to env/generated/.
+GENERATED = os.path.expanduser('~/.cache/freeipa-ci/generated')
+
+
+def preset_path(rel):
+    """The local file of a preset named relative to env/. A generated/...
+    one is found in the cache unless env/ holds a copy."""
+    path = os.path.join(ENVROOT, rel)
+    if not os.path.exists(path) and rel.startswith('generated/'):
+        cached = os.path.join(GENERATED, rel[len('generated/'):])
+        if os.path.exists(cached):
+            return cached
+    return path
+
+
 
 class QueueJob:
     def __init__(self, preset_rel, note=None):
         self.preset_rel = preset_rel  # relative to ENVROOT (env)
         self.note = note
-        self.path = os.path.join(ENVROOT, preset_rel)
+        self.path = preset_path(preset_rel)
 
     @property
     def key(self):

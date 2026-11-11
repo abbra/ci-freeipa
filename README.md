@@ -394,7 +394,7 @@ A queue of `provider: nested` presets runs under the `freeipa-env queue` supervi
 - With `--category NAME`, it prints the matching lines and the tail of each source file. Use `--category all` for every category. You can repeat the option.
 - Daemon categories (`ds`, `httpd`, `ca`, `kdc`, `samba`, `dns`, `ipa`, `system`) also read the per-test VM trees. Each test's uninstall removes the daemon logs from the VM, so the per-test copies are the only ones left.
 - Identical matching lines are reported once per host, keyed on the full line text, timestamp included. The summary counts and `--json` use the same rule. A repeated line shows as `no new matching lines`. `--all` dumps the unfiltered file and does not dedupe.
-- Given a queue file (`env/generated/<queue>.yaml`, with `jobs:`), `logs` lists its jobs. Each job shows the `logs` command and the workdir of its env file. Run `logs` on one of those env files.
+- Given a queue file (for example one from `blend`, with `jobs:`), `logs` lists its jobs. Each job shows the `logs` command and the workdir of its env file. Run `logs` on one of those env files.
 - Filtered scans are cached in `<workdir>/.scan-cache.sqlite`, keyed by file, pattern and size/mtime. A repeat `logs` run on an unchanged workdir takes well under a second. The first run after a new `run`/`down` rescans the changed files. `freeipa-env cache show ENV` lists the cache per category; `cache clear ENV --category NAME` (repeatable) or `--all` drops it. `ENV` may be a queue file, and then the command applies to every job's workdir. `--pattern` scans show as `custom:`.
 
 ```
@@ -939,9 +939,11 @@ Without an SRPM (`--srpm`, or a `build:` block), a missing channel image is made
 
 ## Blend a preset or queue with a provider setup (`blend`)
 
-`freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a preset or queue that is ready to run. The file is `env/generated/NAME.yaml`. You then run it with `run` or `queue run`. You do not repeat any flags.
+`freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a preset or queue that is ready to run. The file is `~/.cache/freeipa-ci/generated/NAME.yaml`. You then run it with `run` or `queue run`. You do not repeat any flags.
 
-- BASE is a preset or a queue (a file with `jobs:`). For a queue, each job is blended. Each one is written to `env/generated/NAME/<job>.yaml`.
+The generated files are outputs, not sources, so they are written to `~/.cache/freeipa-ci/generated/` and not to the repository. A queue names its presets as `generated/NAME/<job>.yaml`, relative to `env/`. A local run finds them in the cache. `queue run` copies the whole directory to `env/generated/` inside each runner's copy of the tree (SSH and local runners), so a blended queue runs on any runner. Testing Farm clones the repository and gets no copy: commit a preset under `env/presets/` to run it there. An `env/generated/` file in the repository still works and takes precedence.
+
+- BASE is a preset or a queue (a file with `jobs:`). For a queue, each job is blended. Each one is written to `~/.cache/freeipa-ci/generated/NAME/<job>.yaml`.
 - PROVIDER is a setup file. It has keys such as `provider`, `inner`, `vm`, `image`, `dist`, and `domain`. Its top-level keys replace the keys of BASE. `hosts` and `resources` always come from BASE, so the test's topology and memory stay. Its `name` and `run` are ignored.
 - `--tests` replaces `run.tests` in each generated preset.
 - The test's `image:` names a podman image. A result that runs in VMs (`nested` with `inner: external`) or on `external` hosts does not carry it, unless PROVIDER sets `image` itself. Such a result has no image to build or find.
@@ -949,7 +951,7 @@ Without an SRPM (`--srpm`, or a `build:` block), a missing channel image is made
 ```
 freeipa-env blend presets/base-xmlrpc.yaml presets/nested-qemu-external.yaml \
     --name xmlrpc-vm --tests test_xmlrpc
-freeipa-env run env/generated/xmlrpc-vm.yaml
+freeipa-env run ~/.cache/freeipa-ci/generated/xmlrpc-vm.yaml
 ```
 
 `blend` checks each generated file before it writes it. A bad merge fails in `blend`, not during the run.
@@ -989,9 +991,9 @@ mkdir -p ~/.cache/freeipa-ci/images
 ```
 freeipa-env blend prci/nightly-latest-testing/customized_ds_config_install.yaml \
     presets/nested-qemu-mixed.yaml --name mixed-cds
-freeipa-env up  env/generated/mixed-cds.yaml
-freeipa-env run env/generated/mixed-cds.yaml
-freeipa-env down env/generated/mixed-cds.yaml
+freeipa-env up  ~/.cache/freeipa-ci/generated/mixed-cds.yaml
+freeipa-env run ~/.cache/freeipa-ci/generated/mixed-cds.yaml
+freeipa-env down ~/.cache/freeipa-ci/generated/mixed-cds.yaml
 ```
 
 Check the result: `master1` must report `freeipa-server-*.fc44`, and `replica1` must report `freeipa-server-*.fc45`. The FreeIPA server build must match its release in both VMs. If not, the VM image is wrong.
@@ -999,10 +1001,10 @@ Check the result: `master1` must report `freeipa-server-*.fc44`, and `replica1` 
 Then investigate the logs. This is the walkthrough for the run above, with output from a passing run:
 
 ```
-freeipa-env logs env/generated/mixed-cds.yaml                  # 1. triage: which categories have lines
-freeipa-env logs env/generated/mixed-cds.yaml --category tests # 2. xunit: pass/fail and failing messages
-freeipa-env logs env/generated/mixed-cds.yaml --category ds --lines 3 --tail 0
-freeipa-env logs env/generated/mixed-cds.yaml --category ca --host master1.ipa.test --lines 2
+freeipa-env logs ~/.cache/freeipa-ci/generated/mixed-cds.yaml                  # 1. triage: which categories have lines
+freeipa-env logs ~/.cache/freeipa-ci/generated/mixed-cds.yaml --category tests # 2. xunit: pass/fail and failing messages
+freeipa-env logs ~/.cache/freeipa-ci/generated/mixed-cds.yaml --category ds --lines 3 --tail 0
+freeipa-env logs ~/.cache/freeipa-ci/generated/mixed-cds.yaml --category ca --host master1.ipa.test --lines 2
 ```
 
 1. The summary shows the `ds` category with 93 matched lines and `ca` with 114. Most lines are expected noise. `Unknown attribute nssslapd-maxbersize will be ignored` repeats on every 389-ds start. Look for lines that do not repeat.
@@ -1013,7 +1015,7 @@ freeipa-env logs env/generated/mixed-cds.yaml --category ca --host master1.ipa.t
 To find one failing test's logs, look up its directory under `logs/collected/<host>/ipa-env/logs/`. Then narrow with `--pattern`:
 
 ```
-freeipa-env logs env/generated/mixed-cds.yaml --category ds --pattern 'krb5_get_default_realm|Attribute' --lines 5 --tail 0
+freeipa-env logs ~/.cache/freeipa-ci/generated/mixed-cds.yaml --category ds --pattern 'krb5_get_default_realm|Attribute' --lines 5 --tail 0
 ```
 
 For a single failing test on a bad run, `report` writes one shareable file:

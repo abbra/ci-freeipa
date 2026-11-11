@@ -1,9 +1,12 @@
 """`freeipa-env blend`: combine a base preset or queue, a provider setup and a
-test selection into ordinary preset / queue files under env/generated/.
+test selection into ordinary preset / queue files under
+~/.cache/freeipa-ci/generated/.
 
 The generated files are plain presets and queues, so the run is just
-`freeipa-env run env/generated/NAME.yaml` or
-`freeipa-env queue run env/generated/NAME.yaml --runner ...`.
+`freeipa-env run ~/.cache/freeipa-ci/generated/NAME.yaml` or
+`freeipa-env queue run ~/.cache/freeipa-ci/generated/NAME.yaml --runner ...`.
+A queue refers to its presets as generated/NAME/JOB.yaml, relative to env/;
+local runs find them in the cache and the runners get a copy in env/generated.
 
 Merge rule: the provider setup's top-level keys replace the base's keys
 (provider, inner, vm, image, dist, domain, ...), except `name`, `run`,
@@ -17,9 +20,11 @@ import os
 import yaml
 
 from .envspec import EnvSpec, EnvSpecError
+from . import queue as _queue
 from .queue import ENVROOT, QueueSpec
 
-GENERATED = os.path.join(ENVROOT, 'generated')
+# outputs, not sources: kept in the cache, shipped to runners (see queue.py)
+GENERATED = _queue.GENERATED
 PROVIDER_SKIP = ('name', 'run', 'hosts', 'resources')
 
 
@@ -72,7 +77,7 @@ def blend(base_path, provider_path, name, tests=None):
     jobs = []
     for j in q.jobs:
         rel = os.path.join('generated', name, f'{j.key}.yaml')
-        _write(os.path.join(ENVROOT, rel),
+        _write(os.path.join(GENERATED, name, f'{j.key}.yaml'),
                _blend_preset(_doc(j.path), provider, f'{name}-{j.key}',
                              tests))
         entry = {'preset': rel}
