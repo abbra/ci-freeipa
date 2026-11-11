@@ -298,7 +298,8 @@ class NestedProvider:
         try:
             done = guest_settings.apply(
                 self.spec.vm or {}, ext.spec.hosts,
-                lambda h, cmd, t: ext._ssh(h, cmd, timeout=t))
+                lambda h, cmd, t: ext._ssh(h, cmd, timeout=t),
+                ext._scp)
         except ValueError as e:
             raise NestedError(str(e)) from e
         print(f'== guest setup on {count} VM(s): '

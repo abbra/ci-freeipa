@@ -257,9 +257,11 @@ vm:
 - On CentOS Stream, RHEL, Rocky Linux, and AlmaLinux, the install first enables EPEL and CRB. If CRB is not available, it uses `powertools`.
 - Plain names also work. For example: `guest_packages: [tmux]`.
 - Subtract with `-name`. For example, `guest_packages: [ipa-distro, -firewalld, -python3-pip]` keeps the `ipa-distro` set but drops those two packages. The `-` entry works in any position. The pip step of a set is not removed.
-- VM settings are applied in this order, on every VM: `selinux`, `copr`, `guest_packages`, `script`. Each is set under `vm:` and can be overridden for one VM in the `vm.vms` entry named after its host. The table is `SETTINGS` in `env/freeipa_env/guest_settings.py`; a new setting is one row.
+- VM settings are applied in this order, on every VM: `selinux`, `copr`, `guest_packages`, `rpms`, `srpms`, `script`. Each is set under `vm:` and can be overridden for one VM in the `vm.vms` entry named after its host (short or full name). The table is `SETTINGS` in `env/freeipa_env/guest_settings.py`; a new setting is one row.
 - `vm.selinux: permissive` (or `enforcing`) sets the SELinux mode, now and after a reboot. `permissive` also turns on `dontaudit` logging, so `/var/log/audit/audit.log` records every denial a confined service would hit.
 - `vm.copr: [OWNER/PROJECT]` enables those COPR repos with `dnf copr enable`, before the packages are installed.
+- `vm.rpms: [PATH, ...]` copies local RPM files (globs allowed) to the VM, then runs `dnf install` and `dnf reinstall` on them. The reinstall is there because dnf skips a file whose version is already installed, which would keep the old build.
+- `vm.srpms: [PATH, ...]` copies local source RPMs to the VM and rebuilds them there: for each one, in name order, `dnf builddep`, `rpmbuild --rebuild`, then install of the result. Later SRPMs build against the earlier ones. The built RPMs stay in `/root/rpmbuild/RPMS`.
 - `vm.script: [LINE, ...]` (or one multi-line string) runs as `bash -ec` after the packages are installed.
 - If a package name is wrong, `up` fails and prints the `dnf` output.
 - Only Fedora 45 is tested. The EL clones are not tested.
