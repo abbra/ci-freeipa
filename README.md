@@ -361,6 +361,8 @@ A queue of `provider: nested` presets runs under the `freeipa-env queue` supervi
 
 - With no `--category`, it prints a summary for each category. The summary shows the number of sources and the number of interesting lines.
 - With `--category NAME`, it prints the matching lines and the tail of each source file. Use `--category all` for every category. You can repeat the option.
+- Daemon categories (`ds`, `httpd`, `ca`, `kdc`, `samba`, `dns`, `ipa`, `system`) also read the per-test VM trees. Each test's uninstall removes the daemon logs from the VM, so the per-test copies are the only ones left.
+- Identical matching lines are reported once per host, keyed on the full line text, timestamp included. The summary counts and `--json` use the same rule. A repeated line shows as `no new matching lines`. `--all` dumps the unfiltered file and does not dedupe.
 
 ```
 freeipa-env logs ENV.YAML                        # category summary
