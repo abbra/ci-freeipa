@@ -46,6 +46,7 @@ import json
 import html as _htmllib
 import os
 import re
+import sqlite3
 import sys
 import tarfile
 import xml.etree.ElementTree as ET
@@ -178,6 +179,7 @@ class LogStore:
         self.logdir = os.path.join(workdir, 'logs')
         self.collected = os.path.join(self.logdir, 'collected')
         self.extractdir = os.path.join(self.logdir, 'extracted')
+        self.scan_cache = ScanCache(workdir) if os.path.isdir(workdir) else None
         self.hosts = []
         if os.path.isdir(self.collected):
             self.hosts = sorted(
@@ -482,7 +484,7 @@ class LogStore:
         for h in units:
             seen = set()
             for f in self.category_files(cat, h):
-                _t, m, _tl = scan_file(f, pattern)
+                _t, m, _tl = scan_file(f, pattern, cache=self.scan_cache)
                 for l in m:
                     if l not in seen:
                         seen.add(l)
@@ -494,8 +496,45 @@ class LogStore:
 # file / report scanning
 # ---------------------------------------------------------------------------
 
-def scan_file(path, pattern, tail_n=8):
-    """Return (total_lines, matched_lines, last tail_n lines)."""
+class ScanCache:
+    """Memo of scan_file results in <workdir>/.scan-cache.sqlite, keyed by
+    path, pattern and tail length; a changed size or mtime is a miss."""
+
+    def __init__(self, workdir):
+        self.db = sqlite3.connect(os.path.join(workdir, '.scan-cache.sqlite'))
+        self.db.execute('pragma synchronous=off')
+        self.db.execute('create table if not exists scan (path text, key text,'
+                        ' size int, mtime int, total int, matched text,'
+                        ' tail text, primary key (path, key))')
+
+    def get(self, path, key, st):
+        row = self.db.execute('select size, mtime, total, matched, tail'
+                              ' from scan where path=? and key=?',
+                              (path, key)).fetchone()
+        if row and row[0] == st.st_size and row[1] == st.st_mtime_ns:
+            return row[2], json.loads(row[3]), json.loads(row[4])
+        return None
+
+    def put(self, path, key, st, total, matched, tail):
+        self.db.execute('insert or replace into scan values (?,?,?,?,?,?,?)',
+                        (path, key, st.st_size, st.st_mtime_ns, total,
+                         json.dumps(matched), json.dumps(tail)))
+        self.db.commit()
+
+
+def scan_file(path, pattern, tail_n=8, cache=None):
+    """Return (total_lines, matched_lines, last tail_n lines). With a cache,
+    only filtered scans are memoized; whole-file scans are not stored."""
+    key = None
+    if cache is not None and pattern is not None:
+        key = f'{pattern.pattern}\0{pattern.flags}\0{tail_n}'
+        try:
+            st = os.stat(path)
+        except OSError:
+            st = None
+        hit = cache.get(path, key, st) if st else None
+        if hit:
+            return hit
     matched, total = [], 0
     tailbuf = deque(maxlen=max(tail_n, 1))
     try:
@@ -508,6 +547,8 @@ def scan_file(path, pattern, tail_n=8):
                     matched.append(line)
     except OSError as e:
         return 0, [f'<unreadable: {e}>'], []
+    if key is not None and st:
+        cache.put(path, key, st, total, matched, list(tailbuf))
     return total, matched, list(tailbuf)
 
 
@@ -763,7 +804,7 @@ def ptest_stats(store, cat):
         for e in groups[test]:
             for f in store.ptest_entry_files(e):
                 sources += 1
-                _t, m, _x = scan_file(f, cat.match)
+                _t, m, _x = scan_file(f, cat.match, cache=store.scan_cache)
                 matched += len(m)
     return sources, matched
 
@@ -915,7 +956,8 @@ def _show_file(store, path, cat, args, root, seen=None):
         pattern = args.pattern_compiled
     else:
         pattern = cat.match
-    total, matched, tail = scan_file(path, pattern, tail_n=max(args.tail, 1))
+    total, matched, tail = scan_file(path, pattern, tail_n=max(args.tail, 1),
+                                     cache=store.scan_cache)
     if seen is not None:
         fresh = [l for l in matched if l not in seen]
         seen.update(matched)

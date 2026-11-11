@@ -42,3 +42,19 @@ def test_matched_lines_keeps_same_text_with_different_timestamps(tmp_path):
     store.category_files = lambda c, h: [
         write(tmp_path / 'a', '[t1] ERR - x\n[t2] ERR - x\n')]
     assert len(store.matched_lines(cat, PAT)) == 2
+
+
+def test_scan_cache_hit_then_invalidated_on_change(tmp_path):
+    f = write(tmp_path / 'errors', 'ERR one\nok\n')
+    cache = la.ScanCache(str(tmp_path))
+    assert la.scan_file(f, PAT, cache=cache)[1] == ['ERR one']
+    # same size and mtime: the cached answer is served, not the file
+    st = (tmp_path / 'errors').stat()
+    cache.db.execute('update scan set matched=?', ('["cached"]',))
+    cache.db.commit()
+    assert la.scan_file(f, PAT, cache=cache)[1] == ['cached']
+    # a rewritten file (new mtime) is rescanned
+    (tmp_path / 'errors').write_text('ERR two\nok\n')
+    import os
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert la.scan_file(f, PAT, cache=cache)[1] == ['ERR two']

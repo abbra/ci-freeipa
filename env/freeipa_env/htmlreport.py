@@ -245,7 +245,7 @@ def _category_section(cat, store):
     matched_total = 0
     files_html = []
     for f in sources:
-        total, matched, _tail = scan_file(f, cat.match)
+        total, matched, _tail = scan_file(f, cat.match, cache=store.scan_cache)
         matched_total += len(matched)
         rel = _rel(store, f)
         if not matched:
