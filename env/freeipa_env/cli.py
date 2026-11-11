@@ -331,16 +331,8 @@ def _cache_label(key):
     return 'custom:' + key.split('\0')[0][:40]
 
 
-def cmd_cache(args):
-    """Show the scan cache of a workdir, or drop the cached scans of chosen
-    categories (--category, repeatable) or of everything (--all)."""
-    workdir = args.workdir
-    if not workdir and args.env:
-        workdir = default_workdir(load_spec(args.env))
-    if not workdir:
-        print('error: give an env file (to derive the default workdir) '
-              'or --workdir DIR', file=sys.stderr)
-        return 2
+def _cache_in(workdir, args):
+    """Show or clear the scan cache of one workdir; returns an exit code."""
     dbfile = os.path.join(workdir, '.scan-cache.sqlite')
     if not os.path.isfile(dbfile):
         print(f'no scan cache in {workdir}')
@@ -358,9 +350,6 @@ def cmd_cache(args):
             print(f'{label:<24}{files:>8}{chars:>14}')
         print(f'database: {os.path.getsize(dbfile)} bytes')
         return 0
-    if not args.all and not args.category:
-        print('error: clear needs --category NAME or --all', file=sys.stderr)
-        return 2
     wanted = set(args.category or [])
     victims = [key for key, _f, _c in rows
                if args.all or _cache_label(key) in wanted]
@@ -368,6 +357,33 @@ def cmd_cache(args):
     print(f'cleared {len(victims)} cached pattern(s) in {workdir}')
     return 0
 
+
+def cmd_cache(args):
+    """Show the scan cache of a workdir or of every job in a queue file, or
+    drop cached scans of chosen categories (--category) or all (--all)."""
+    if args.action == 'clear' and not args.all and not args.category:
+        print('error: clear needs --category NAME or --all', file=sys.stderr)
+        return 2
+    if not args.workdir and args.env and _is_queue(args.env):
+        q = QueueSpec.from_file(args.env)
+        print(f'queue {q.name}: {len(q.jobs)} jobs')
+        for job in q.jobs:
+            try:
+                wd = default_workdir(EnvSpec.from_file(job.path))
+            except (EnvSpecError, OSError):
+                continue
+            if os.path.isfile(os.path.join(wd, '.scan-cache.sqlite')):
+                print(f'== {job.preset_rel}')
+                _cache_in(wd, args)
+        return 0
+    workdir = args.workdir
+    if not workdir and args.env:
+        workdir = default_workdir(load_spec(args.env))
+    if not workdir:
+        print('error: give an env file (to derive the default workdir) '
+              'or --workdir DIR', file=sys.stderr)
+        return 2
+    return _cache_in(workdir, args)
 
 
 def cmd_logs(args):
