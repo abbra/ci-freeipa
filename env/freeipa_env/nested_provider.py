@@ -28,6 +28,7 @@ handles to ``<workdir>/nested-state.json`` so that a later, separate
 import json
 import os
 import shlex
+import shutil
 
 import yaml
 
@@ -325,6 +326,9 @@ class NestedProvider:
             return True
         try:
             self._external().down(collect=True)
+            # the inner external tree lives under inner/logs; `logs` reads ours
+            src = os.path.join(self.workdir, 'inner', 'logs')
+            shutil.copytree(src, self.logdir, dirs_exist_ok=True)
             return True
         except Exception as e:              # noqa: BLE001
             print(f'== external log collection failed: {e}')

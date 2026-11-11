@@ -269,7 +269,7 @@ class ExternalProvider:
             tmp = tree + '.partial'
             try:
                 cmd = self._ssh_args(ctrl) + ['-T',
-                    'tar --ignore-failed-read -czf - -C /root ipa-env '
+                    'tar --ignore-failed-read -czf - -C /root ipa-env nosetests.xml '
                     '2>/dev/null']
                 with open(tmp, 'wb') as f:
                     subprocess.run(cmd, stdout=f,
