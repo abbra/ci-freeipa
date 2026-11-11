@@ -1,262 +1,313 @@
-# ci-freeipa — FreeIPA CI tooling, separate from the branch under test
+# ci-freeipa: FreeIPA CI tools
 
-This repository holds the FreeIPA CI implementation: the `freeipa-env`
-provisioner (spawns or attaches FreeIPA test environments from a single
-declarative file and drives the install → test → uninstall workflow), the
-image pipeline, the preset/queue catalogs and the tmt test that runs a job
-batch on a Testing Farm guest. The freeipa source tree no longer carries
-any of this code — it keeps only a pinned tmt plan that runs this repo's
-test against the checkout under test (see **Repository split** below). The
-design is documented in the freeipa repository as
-`doc/designs/ci_modernization.md`.
+This repository contains the FreeIPA CI tools. It has these parts:
 
-For agent-assisted investigation and testing of a current FreeIPA worktree,
-see [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
-To test the packages a Fedora release already ships, with no checkout, build
-or COPR repository, see **Test the packages Fedora ships** below and
-[ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md).
+- `freeipa-env`: a tool that creates or attaches FreeIPA test environments. It reads one YAML file and runs the install, test, and uninstall steps.
+- The image pipeline, the preset catalog, and the queue catalog.
+- A tmt test that runs a job batch on a Testing Farm guest.
+
+The FreeIPA source tree does not contain this code. It contains only a pinned tmt plan. That plan runs the test from this repository against the checkout under test. See [Repository split](#repository-split). The design is in the FreeIPA repository, in `doc/designs/ci_modernization.md`.
+
+Use these guides for specific tasks:
+
+- To test a FreeIPA worktree with an agent, read [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
+- To test the packages that a Fedora release ships, read [Test the packages Fedora ships](#test-the-packages-fedora-ships-the-default) and [ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md). You do not need a checkout, a build, or a COPR repository.
+
+## Contents
+
+- [Repository split](#repository-split)
+- [Commands](#commands)
+- [Env file](#env-file)
+- [Nested provider](#nested-provider-get-a-vm-run-the-env-in-it)
+- [Artifacts](#artifacts)
+- [Log analysis](#log-analysis-logs)
+- [Presets](#presets)
+- [Migrated PRCI definitions](#migrated-prci-definitions-migrate)
+- [Run queues](#run-queues-and-the-supervisor-queue)
+- [Runner transports](#runner-transports---runner)
+- [Fedora dist-git lane](#fedora-dist-git-lane-packaging-pr-ci)
+- [Test the packages Fedora ships](#test-the-packages-fedora-ships-the-default)
+- [Build the IPA RPMs](#build-the-ipa-rpms-ourselves)
+- [Blend a preset](#blend-a-preset-or-queue-with-a-provider-setup-blend)
+- [Preset validation](#preset-validation-check)
+- [Notes](#notes)
 
 ## Repository split
 
-CI code and the branch under test are versioned independently. The only CI
-artifact inside a freeipa checkout is the pin — the plan
-`ci/tmt/plans/freeipa-env.fmf`, which discovers the test in this repo
-(`tmt/tests/freeipa-env/`) from a git URL at a pinned ref, and whose
-`prepare` step installs the BuildRequires of **that branch's**
-`freeipa.spec.in` (build dependencies belong to the code being built).
-Adopting newer CI tooling is therefore a one-line `ref:` bump in the plan;
-changing a branch's build deps never requires touching this repo.
+CI code and the branch under test have separate versions. The only CI file in a FreeIPA checkout is the pin: the plan `ci/tmt/plans/freeipa-env.fmf`.
 
-Running the test from a freeipa checkout (the plan's `discover.url` must be
-a git URL reachable where tmt runs — a local path works for local runs):
+The pin does three things:
+
+- It finds the test in this repository (`tmt/tests/freeipa-env/`). It uses a git URL and a pinned ref.
+- Its `prepare` step installs the BuildRequires of the branch's `freeipa.spec.in`. Build dependencies belong to the code that is built.
+
+To use newer CI tools, change the `ref:` line in the plan. You do not change this repository when a branch changes its build dependencies.
+
+To run the test from a FreeIPA checkout, use this command. The plan's `discover.url` must be a git URL that tmt can reach. A local path works for local runs.
 
 ```
 tmt run plan --name /ci/tmt/plans/freeipa-env -e FREEIPA_SRC=$PWD
 ```
 
-`FREEIPA_SRC` points the test at this checkout for the on-guest SRPM build;
-the Testing Farm transport sets `FREEIPA_REPO_URL`/`FREEIPA_REPO_REF`
-instead (the guest clones the branch under test itself, since TF syncs the
-fmf tree as a plain file copy without `.git` or submodules). Submitting a
-TF batch from here: `freeipa-env queue run QUEUE --runner testing-farm
---freeipa-src ~/freeipa` — the repo under test defaults to that checkout's
-origin and branch.
+`FREEIPA_SRC` gives the path of the checkout. The test builds the SRPM from it on the guest.
+
+Testing Farm sets `FREEIPA_REPO_URL` and `FREEIPA_REPO_REF` instead. The guest clones the branch under test. Testing Farm copies the fmf tree as plain files. The copy has no `.git` directory and no submodules.
+
+To submit a Testing Farm batch from here, use this command. The repository under test defaults to the origin and branch of that checkout.
 
 ```
-freeipa-env up   ENV.YAML    create (or attach) the environment
-freeipa-env run  ENV.YAML    run the test workflow (install, tests, uninstall)
-freeipa-env down ENV.YAML    collect journal/logs, then tear down
-freeipa-env show ENV.YAML    environment state, image labels, installed IPA/kuipa/ahdapa/akamu builds
-freeipa-env logs ENV.YAML    categorize and retrieve collected logs
-freeipa-env logs ENV.YAML --test T --file NAME   last lines of a collected file, per test and host
-freeipa-env run  ENV.YAML --tests X   run these tests instead of the env's run.tests
-freeipa-env run  ENV.YAML --detach    start the tests and return (survives this command)
-freeipa-env status ENV.YAML            state and output of a detached run
-freeipa-env wait ENV.YAML              wait for a detached run, fetch report, print summary
-freeipa-env summary ENV.YAML           per-test results of the last run with failure causes
-freeipa-env overlay ENV.YAML SRC:/DST  copy files into every container, hash-verified
-freeipa-env reset ENV.YAML             fresh containers on the same spec, old logs kept aside
-freeipa-env list                       environments on this host
-freeipa-env prune [--yes] [--workdirs] remove environments with nothing running
-freeipa-env report [ENV.YAML]  render a self-contained results.html from the artifacts
-freeipa-env resolve ENV.YAML   resolve image refs against the local store (read-only)
-freeipa-env ensure ENV.YAML    build the env's missing channel images (Fedora's packages, or build.srpm)
-freeipa-env migrate PRCI.YAML  generate presets from a PRCI definition
-freeipa-env queue run QUEUE.YAML --runner USER@HOST [...]   # run a queue
-freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          # PRCI-order queue
-freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]    # generated preset/queue
-freeipa-env check [PRESETS ...]                             # validate presets (no containers)
+freeipa-env queue run QUEUE --runner testing-farm --freeipa-src ~/freeipa
 ```
 
-Common options: `--workdir DIR` (state/logs dir, default
-`$XDG_STATE_HOME/freeipa-env/<env-name>`, i.e.
-`~/.local/state/freeipa-env/<env-name>`, never the current directory),
-`--tool podman`, `--seccomp FILE` (podman), `--strict` (external: fail on
-unreachable ports), `--ssh-key FILE` (external: root SSH key).
+## Commands
 
-### Long runs, repeatable runs
+```
+freeipa-env up   ENV.YAML    Create or attach the environment.
+freeipa-env run  ENV.YAML    Run the test workflow: install, tests, uninstall.
+freeipa-env down ENV.YAML    Collect journal and logs, then remove the environment.
+freeipa-env show ENV.YAML    Show the state, image labels, and installed IPA, kuipa, ahdapa, and akamu builds.
+freeipa-env logs ENV.YAML    Sort and retrieve the collected logs.
+freeipa-env logs ENV.YAML --test T --file NAME   Show the last lines of a collected file, for one test and host.
+freeipa-env run  ENV.YAML --tests X   Run these tests instead of the run.tests in the env file.
+freeipa-env run  ENV.YAML --detach    Start the tests and return. The run continues after this command ends.
+freeipa-env status ENV.YAML           Show the state and output of a detached run.
+freeipa-env wait ENV.YAML             Wait for a detached run, get the report, and print a summary.
+freeipa-env summary ENV.YAML          Show the result of each test in the last run, with the cause of each failure.
+freeipa-env overlay ENV.YAML SRC:/DST Copy files into every container. Each copy is checked with a hash.
+freeipa-env reset ENV.YAML            Create fresh containers from the same spec. Keep the old logs.
+freeipa-env list                      List the environments on this host.
+freeipa-env prune [--yes] [--workdirs] Remove the environments that have nothing running.
+freeipa-env report [ENV.YAML]         Make a self-contained results.html from the artifacts.
+freeipa-env resolve ENV.YAML          Find the image references in the local image store. Read only.
+freeipa-env ensure ENV.YAML           Build the missing channel images for the env. Use Fedora packages, or build.srpm.
+freeipa-env migrate PRCI.YAML         Make presets from a PRCI definition.
+freeipa-env queue run QUEUE.YAML --runner USER@HOST [...]   Run a queue.
+freeipa-env queue generate PRCI.YAML -o QUEUE.YAML          Make a queue in PRCI order.
+freeipa-env blend BASE PROVIDER --name NAME [--tests T ...] Make a preset or queue from a base and a provider.
+freeipa-env check [PRESETS ...]       Check presets. No containers are started.
+```
 
-A backup/restore class takes 30 minutes or more. `run` in the foreground is
-tied to the calling process: a wrapper timeout or a sleeping laptop ends the
-command while the tests may keep going inside the master. Use
-`run --detach`; `status` shows the state and the output tail, and `wait`
-(optionally `--timeout`) fetches `nosetests.xml` and prints a per-test summary
-with the cause of each failure. `run --tests X` selects tests without editing
-the env file.
+### Common options
 
-Several classes in one `run` share the containers, so state an uninstall
-leaves behind reaches the next class; that is a real finding, not noise. For
-an independent result use `reset` (fresh containers, previous logs kept as
-`logs.<timestamp>`).
+- `--workdir DIR`: the state and log directory. The default is `$XDG_STATE_HOME/freeipa-env/<env-name>`, which is `~/.local/state/freeipa-env/<env-name>`. It is never the current directory.
+- `--tool podman`: use podman.
+- `--seccomp FILE`: use a seccomp file. Podman only.
+- `--strict`: with the external provider, fail when a port cannot be reached.
+- `--ssh-key FILE`: with the external provider, use this root SSH key.
 
-`up` picks a free podman subnet when the env names none, and fails with the
-owning network's name when a named one is taken. It warns when the
-`dns_forwarder` does not answer from the master: an install with DNS fails
-its forwarder check on a resolver that is merely down.
+### Long runs and repeated runs
 
-`overlay SRC:/DST ...` copies files into every container and verifies each by
-SHA-256. It records them in `<workdir>/overlay.json`; `show` and the run
-summary then say the run is not a packaged one. Sources must be final files,
-not `*.in` templates.
+A backup or restore test class can take 30 minutes or more. A foreground `run` depends on the calling process. If a wrapper timeout ends the command, or a laptop sleeps, the command stops. The tests can keep running in the master.
 
-`list` shows every environment on the host (from its podman network, so
-orphans whose workdir is gone appear too); `prune` removes the stopped ones
-(dry run unless `--yes`).
+Use `run --detach` for long runs:
+
+- `status` shows the state and the last lines of output.
+- `wait` gets `nosetests.xml` and prints a summary for each test. It also gives the cause of each failure. Use `--timeout` to set a limit.
+- `run --tests X` chooses tests without an edit to the env file.
+
+Several classes in one `run` share the containers. If an uninstall leaves state behind, the next class gets that state. That is a real result, not noise. For an independent result, use `reset`. It creates fresh containers and keeps the old logs as `logs.<timestamp>`.
+
+`up` chooses a free podman subnet when the env file names none. If a named subnet is in use, `up` fails and gives the name of the network that uses it.
+
+`up` warns when the `dns_forwarder` does not answer from the master. An install with DNS fails its forwarder check when the resolver is down.
+
+`overlay SRC:/DST` copies files into every container. It checks each file with SHA-256. It writes the copies to `<workdir>/overlay.json`. After that, `show` and the run summary say that the run is not a packaged run. Sources must be final files, not `*.in` templates.
+
+`list` shows every environment on the host. It reads the podman networks, so it also shows orphans whose workdir is gone. `prune` removes the stopped environments. It is a dry run unless you add `--yes`.
 
 ## Env file
 
 ```yaml
 name: base-xmlrpc
-provider: podman            # or: external (pre-created), nested (get a VM via API)
+provider: podman            # or: external (pre-created), nested (get a VM through an API)
 domain: ipa.test
 dist: 44
-image: freeipa-current      # build channel; the provider resolves the
-                            # concrete image (per-host image: overrides)
+image: freeipa-current      # build channel. The provider finds the image. Per-host image: overrides it.
 hosts:
   - {role: master, name: master1}
   - {role: client, name: client1}
-resources:                  # defaults mirror Azure variables-fedora.yml
+resources:                  # defaults match the Azure variables-fedora.yml file
   master: {memory: 1800m, memory-swap: 2500m}
   client: {memory: 512m, memory-swap: 1024m}
 run:
   mode: base                # or: integration
   setup_dns: true
   setup_kra: true
-  forwarder: 8.8.8.8        # explicit; else --auto-forwarders
+  forwarder: 8.8.8.8        # set it here, or use --auto-forwarders
   tests: [test_xmlrpc]
   ignore: [test_xmlrpc/test_dns_plugin.py]
 ```
 
-External (pre-created) systems: set `provider: external` (or just give a
-host an `address:`). Hosts then need `name`/`role`/`address` (plus optional
-`user`, `port`, `image`, `os`). `up` only validates reachability/SSH/
-hostname/distribution/IPA state and never mutates; `run` is unchanged; `down`
-collects logs without destroying anything. Authenticate with `--ssh-key`
-(default `~/.ssh/id_rsa`).
+### External systems
 
-## Nested provider (get a VM, run the env in it)
+External systems already exist. To use one, set `provider: external`. You can also give a host an `address:`.
 
-For cloud deployments where the test VMs exist only **through an API**, set
-`provider: nested`. A nested provider composes an **outer VM backend**
-("get a VM") with an **inner provider** (default `podman`, "run the env in
-the VM"). The inner environment is this same spec with `provider` set to
-`inner` and the `vm:` block stripped — the `hosts:` become containers in the
-provisioned VM, and the whole podman flow runs there. It is the supervisor's
-pre-allocated runner generalized: the runner is acquired by the backend on
-demand and released on `down`.
+Each host needs `name`, `role`, and `address`. It can also have `user`, `port`, `image`, and `os`.
+
+- `up` checks reachability, SSH, the hostname, the distribution, and the IPA state. It does not change the system.
+- `run` works the same as before.
+- `down` collects logs. It does not delete anything.
+
+Use `--ssh-key` to set the key. The default is `~/.ssh/id_rsa`.
+
+## Nested provider: get a VM, run the env in it
+
+Use `provider: nested` when the test VMs exist only through an API. A nested provider has two parts:
+
+- An **outer VM backend** gets a VM.
+- An **inner provider** runs the env in the VM. The default inner provider is `podman`.
+
+The inner environment uses the same spec. Its `provider` is `inner`, and the `vm:` block is removed. The `hosts:` become containers in the VM. The full podman flow then runs in the VM.
+
+The backend gets a runner when it is needed. It releases the runner at `down`. This is the supervisor's pre-allocated runner, generalized.
 
 ```yaml
 name: nested-example
 provider: nested
 image: freeipa-current
-inner: podman              # inner provider (default podman)
+inner: podman              # inner provider. The default is podman.
 vm:
   backend: command         # ssh | command | openstack | qemu
-  count: 1                 # VMs to provision (podman inner uses the 1st)
-  provision_cmd: examples/nested/get-vm.sh      # $1 = count; print user@host[:port] / line
-  deprovision_cmd: examples/nested/drop-vm.sh   # $1 = vm id/target
+  count: 1                 # number of VMs. The podman inner provider uses the first one.
+  provision_cmd: examples/nested/get-vm.sh      # $1 is the count. Print user@host[:port], one per line.
+  deprovision_cmd: examples/nested/drop-vm.sh   # $1 is the VM id or target.
 hosts:
   - {role: master, name: master1}
   - {role: replica, name: replica1}
 run: {mode: integration, tests: [test_integration/test_simple_replication.py]}
 ```
 
-**VM backends** (`freeipa_env/vmbackend.py`):
+### VM backends
 
-* `ssh` — a pool of pre-allocated `user@host[:port]` entries (`vm.hosts`);
-  `terminate` is a no-op. The "no real API" reference case.
-* `command` — shell out to `vm.provision_cmd <count>` (stdout: one
-  `user@host[:port]` per line, or a JSON list of handles) and
-  `vm.deprovision_cmd <handle>`. The **generic cloud-API integration
-  point**: wrap any cloud in two scripts. See `examples/nested/`.
-* `openstack` — a concrete real-API example on the `openstack` CLI
-  (`server create`/`show`/`delete`, floating IPs); the template for any
-  other cloud.
-* `qemu` — local VMs under qemu/KVM on the control node (no cloud API): a
-  qcow2 overlay on `vm.image` (a cloud base image, e.g. Fedora Cloud Base),
-  cloud-init seeds the control node's ssh key for root, ssh over a forwarded
-  localhost port. Each VM also gets a private NIC on `192.168.100.0/24`
-  (`vm1` = `.10`, `vm2` = `.11`, …) with peers in `/etc/hosts`, so VMs reach
-  each other by name. `vm.vms` overrides `name`, `image`, `cpus`, `memory`,
-  `disk` per VM; `vm.count` must equal its length. `terminate` kills the qemu
-  process and removes the overlay; `console.log` is kept under `vm.state_dir`.
-  Needs `/dev/kvm` and the host packages listed below.
-  `vm.gpu: virgl` gives a VM virtio-gpu with OpenGL rendered on the control
-  node's GPU (`vm.render_node`, default `/dev/dri/renderD128`, must be
-  read/write for the user). It needs the `qemu-device-display-virtio-gpu-gl`
-  and `qemu-ui-egl-headless` packages. Guest check: `EGL_PLATFORM=surfaceless
-  eglinfo` should report the `virtio_gpu` driver and a `virgl` renderer.
-  Each such VM also serves its screen as VNC + websocket on loopback; `up`
-  prints the port. View it in a browser with noVNC (`novnc` package): open
-  `vnc.html?host=127.0.0.1&port=<ws>`. From another machine, tunnel with
-  `ssh -L <ws>:127.0.0.1:<ws>`.
+The backends are in `freeipa_env/vmbackend.py`.
 
-  `vm.usb: [VVVV:PPPP, ...]` (per VM in `vm.vms[i]`) passes host USB devices to
-  that VM through qemu `usb-host` on an xHCI controller. Each entry claims one
-  free host device with that vendor:product id; a device goes to one VM only.
-  Attached at boot only: no hot-plug. The device disappears from the host while
-  the VM runs. The user must be able to read/write `/dev/bus/usb/BBB/DDD` for
-  the device, or `up` fails with that path; a udev rule is the usual fix.
+- **`ssh`**: a pool of VMs that already exist. Each entry is `user@host[:port]` in `vm.hosts`. `terminate` does nothing. Use this as a simple reference.
+- **`command`**: runs your scripts. `vm.provision_cmd <count>` prints the VM handles. Print one `user@host[:port]` per line, or a JSON list. `vm.deprovision_cmd <handle>` removes a VM. This is the general integration point for a cloud API. Wrap any cloud in two scripts. See `examples/nested/`.
+- **`openstack`**: an example that uses the `openstack` CLI. It runs `server create`, `show`, and `delete`, and it uses floating IPs. Use it as a template for other clouds.
+- **`qemu`**: local VMs under qemu and KVM on the control node. There is no cloud API.
 
-  **Host packages (qemu backend, Fedora).** Required:
-  ```
-  sudo dnf install qemu-system-x86-core qemu-img genisoimage rsync openssh-clients
-  ```
-  `genisoimage` may be replaced by `xorriso` or `mkisofs`. Add for `vm.gpu: virgl`:
-  ```
-  sudo dnf install qemu-device-display-virtio-gpu-gl qemu-ui-egl-headless virglrenderer
-  ```
-  Optional, to view the VM screen in a browser: `sudo dnf install novnc`.
-  Guest-side GL (`mesa-dri-drivers`, `egl-utils`) is installed inside the VM, not on the host.
-  The user must be able to read `/dev/kvm` and, for virgl, read/write `render_node`.
+#### The qemu backend
 
-  **Guest packages (VM).** Set `vm.guest_packages` in the nested spec. Entries are
-  set names or plain package names, installed with `dnf` on every VM before the
-  inner `up`:
-  - `gpu`: `mesa-dri-drivers`, `egl-utils` (for the virgl `eglinfo` check).
-  - `ipa-distro`: the FreeIPA server/client/python packages from the distro
-    (no COPR, no local build), plus `pytest-html==4.2.0` via pip.
+- Each VM is a qcow2 overlay on `vm.image`. Use a cloud base image, such as Fedora Cloud Base.
+- cloud-init adds the control node's SSH key for root. SSH uses a forwarded localhost port.
+- Each VM has a private NIC on `192.168.100.0/24`. `vm1` gets `.10`, `vm2` gets `.11`, and so on. The VMs have each other in `/etc/hosts`, so they can reach each other by name.
+- `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`.
+- `terminate` stops the qemu process and removes the overlay. The `console.log` file stays in `vm.state_dir`.
+- You need `/dev/kvm` and the host packages below.
 
-  ```yaml
-  vm:
-    guest_packages: [gpu, ipa-distro]
-    gpu: virgl
-  ```
+#### GPU: virgl
 
-  Fedora installs straight from its repos. On CentOS Stream, RHEL, Rocky and
-  AlmaLinux the install first enables EPEL and CRB (`crb`, falling back to
-  `powertools`). Plain names work too, e.g. `guest_packages: [tmux]`.
-  Not verified on the EL clones; only Fedora 45 was tested.
-  The `up` step fails with the dnf output if a package name is wrong.
-  Guest desktop packages are not in any set yet.
+Set `vm.gpu: virgl` to give a VM virtio-gpu with OpenGL. The control node's GPU renders the output.
 
-**Lifecycle.** `up`: provision → wait for ssh → rsync the ci-freeipa tree + the
-inner spec to the VM → run the inner `freeipa-env up` there → save the VM
-handles to `<workdir>/nested-state.json` (so a later `down` knows what to
-tear down). `down`: run the inner `freeipa-env down` (collects logs), rsync
-the remote workdir back (so `logs` and the xunit work locally), release the
-VMs, clear state. `run` drives the inner `freeipa-env run` on the primary VM.
-`resolve` is deferred — the VM does not exist yet, so image resolution
-happens on the VM at `up` time (a provisioned VM is expected to carry the
-`freeipa-ci` image, or set `vm.image_ref` to `podman pull` it).
+- `vm.render_node` sets the render node. The default is `/dev/dri/renderD128`. The user must be able to read and write it.
+- You need the packages `qemu-device-display-virtio-gpu-gl` and `qemu-ui-egl-headless`.
+- To check the guest, run `EGL_PLATFORM=surfaceless eglinfo`. The output must show the `virtio_gpu` driver and a `virgl` renderer.
 
-With `inner: external` nothing runs in containers: each host runs directly on
-the VM it names with `hosts[].vm` (a VM from the backend's list; for qemu,
-`vm.vms[].name`). Every host needs a `vm:`, no VM may serve two hosts, and
-`vm.count` must equal the host count. `up` provisions the VMs, maps each host
-to its VM's forwarded ssh port (`address`/`port`) and private address (`ip`),
-writes the inner external spec, and attaches through `ExternalProvider` from the
-control node. `run` and `show` use the same provider. No ci-tree bootstrap runs
-on the VMs. Example: `env/presets/nested-qemu-external.yaml`.
+Each VM with virgl also sends its screen over VNC and websocket, on the loopback address. `up` prints the port.
 
-**bootc VMs.** For a bootc host, set `vm.bootc: true`. `up` then runs
-`bootc usroverlay` on each VM before `guest_packages`, so dnf can install into
-`/usr`. The overlay is discarded on reboot; a rebooted VM needs `up` again.
-Example: `env/presets/nested-qemu-bootc.yaml` (`guest_packages: [ipa-distro]`,
-one `master1` VM, FreeIPA runs directly on it, no containers).
+To see the screen in a browser, install noVNC (the `novnc` package). Open `vnc.html?host=127.0.0.1&port=<ws>`. To view it from another machine, make a tunnel: `ssh -L <ws>:127.0.0.1:<ws>`.
 
-The base disk is not built by ci-freeipa. It was built with these steps, run
-inside a guest VM because the conversion needs root:
+#### USB passthrough
+
+Set `vm.usb: [VVVV:PPPP, ...]` in `vm.vms[i]` to give host USB devices to that VM. Each entry claims one free host device with that vendor and product ID. One device can go to one VM only.
+
+- The devices attach at boot only. There is no hot-plug.
+- While the VM runs, the device is not available on the host.
+- The user must be able to read and write `/dev/bus/usb/BBB/DDD` for the device. If not, `up` fails and prints that path. A udev rule is the usual fix.
+
+#### Host packages for the qemu backend (Fedora)
+
+These packages are required:
+
+```
+sudo dnf install qemu-system-x86-core qemu-img genisoimage rsync openssh-clients
+```
+
+You can use `xorriso` or `mkisofs` instead of `genisoimage`.
+
+For `vm.gpu: virgl`, also install:
+
+```
+sudo dnf install qemu-device-display-virtio-gpu-gl qemu-ui-egl-headless virglrenderer
+```
+
+To see the VM screen in a browser, also install `novnc`.
+
+The guest GL packages (`mesa-dri-drivers`, `egl-utils`) go inside the VM, not on the host.
+
+The user must be able to read `/dev/kvm`. For virgl, the user must also read and write `render_node`.
+
+#### Guest packages
+
+Set `vm.guest_packages` in the nested spec. Each entry is a set name or a plain package name. `up` installs the packages with `dnf` on every VM, before the inner `up`.
+
+- `gpu`: installs `mesa-dri-drivers` and `egl-utils`. Use it for the virgl `eglinfo` check.
+- `ipa-distro`: installs the FreeIPA server, client, and Python packages from the distribution. It does not use COPR or a local build. It also installs `pytest-html==4.2.0` with pip.
+
+```yaml
+vm:
+  guest_packages: [gpu, ipa-distro]
+  gpu: virgl
+```
+
+- On Fedora, `dnf` installs from the Fedora repositories.
+- On CentOS Stream, RHEL, Rocky Linux, and AlmaLinux, the install first enables EPEL and CRB. If CRB is not available, it uses `powertools`.
+- Plain names also work. For example: `guest_packages: [tmux]`.
+- If a package name is wrong, `up` fails and prints the `dnf` output.
+- Only Fedora 45 is tested. The EL clones are not tested.
+- There are no guest desktop packages in any set yet.
+
+### Lifecycle
+
+`up` runs these steps:
+
+1. Provision the VMs.
+2. Wait for SSH.
+3. Copy the ci-freeipa tree and the inner spec to the VM.
+4. Run the inner `freeipa-env up` on the VM.
+5. Save the VM handles to `<workdir>/nested-state.json`. A later `down` uses this file to find the VMs.
+
+`down` runs these steps:
+
+1. Run the inner `freeipa-env down`. This collects the logs.
+2. Copy the remote workdir back. Then `logs` and the xunit output work on the control node.
+3. Release the VMs.
+4. Clear the state.
+
+`run` starts the inner `freeipa-env run` on the first VM.
+
+`resolve` does not work for nested environments. The VM does not exist yet. The image is found on the VM during `up`. The VM must have the `freeipa-ci` image. Or set `vm.image_ref` so that the VM runs `podman pull`.
+
+### Inner provider: external
+
+With `inner: external`, nothing runs in containers. Each host runs directly on the VM that it names in `hosts[].vm`. For the qemu backend, the name is `vm.vms[].name`.
+
+These rules apply:
+
+- Each host needs a `vm:` entry.
+- No VM can serve two hosts.
+- `vm.count` must equal the number of hosts.
+
+`up` does these steps:
+
+1. Provisions the VMs.
+2. Maps each host to the forwarded SSH port (`address` and `port`) and to the private address (`ip`) of its VM.
+3. Writes the inner external spec.
+4. Attaches with `ExternalProvider` from the control node.
+
+`run` and `show` use the same provider. The ci-freeipa tree is not copied to the VMs. The example is `env/presets/nested-qemu-external.yaml`.
+
+### bootc VMs
+
+For a bootc host, set `vm.bootc: true`. `up` then runs `bootc usroverlay` on each VM. It runs this before `guest_packages`, so `dnf` can install into `/usr`.
+
+The overlay is removed at reboot. After a reboot, run `up` again.
+
+The example is `env/presets/nested-qemu-bootc.yaml`. It uses `guest_packages: [ipa-distro]` and one `master1` VM. FreeIPA runs directly on the VM, without containers.
+
+### Base disk for bootc
+
+ci-freeipa does not build the base disk. The disk was built with these steps. The steps run in a guest VM, because the conversion needs root.
 
 ```sh
 podman pull quay.io/fedora/fedora-bootc:44
@@ -269,121 +320,114 @@ podman run --rm --privileged --pid=host -v /dev:/dev \
 qemu-img convert -O qcow2 /root/output/disk.raw /root/output/disk.qcow2
 ```
 
-Copy the qcow2 to `~/.cache/freeipa-ci/bootc/fedora-bootc-44.qcow2`. Tested:
-the bootc VM boots, `usroverlay` and `dnf install` work, and `ipa-distro`
-installs (freeipa-server 4.13.4). Not tested: `ipa-server-install` on the bootc
-VM; FreeIPA is not supported on bootc server side yet, so this is the failure to
-investigate.
+Copy the qcow2 file to `~/.cache/freeipa-ci/bootc/fedora-bootc-44.qcow2`.
 
-The nested provider runs on the **control node** (a CI machine with the
-cloud API creds + ssh). A queue of `provider: nested` presets runs under the
-existing `freeipa-env queue` supervisor on a control-node `--runner`; each
-job provisions its own VM(s).
+Test status:
+
+- Tested: the bootc VM starts. `usroverlay` and `dnf install` work. The `ipa-distro` packages install. The freeipa-server version is 4.13.4.
+- Not tested: `ipa-server-install` on the bootc VM. FreeIPA does not support the bootc server side yet. This is the failure to investigate.
+
+### Where nested runs happen
+
+The nested provider runs on the **control node**. The control node is a CI machine. It has the cloud API credentials and SSH access.
+
+A queue of `provider: nested` presets runs under the `freeipa-env queue` supervisor. It runs on a control-node `--runner`. Each job provisions its own VMs.
 
 ## Artifacts
 
-`run` writes:
+`run` writes these files:
 
-- `<workdir>/nosetests.xml` — JUnit XML from `ipa-run-tests --with-xunit`
-- `<workdir>/logs/` — per-host journal + `/var/log/ipa*` tarballs, install
-  and test run logs
-- `IPA_TESTS_LOGSDIR` (in-container) — per-test logs from the framework
-  (`--logfile-dir`); `down`/`collect_logs` also fetch this controller tree
-  into `<workdir>/logs/collected/<master>/ipa-env/logs` so `logs` can surface it
-  (see the `per-test` category below)
+- `<workdir>/nosetests.xml`: JUnit XML from `ipa-run-tests --with-xunit`.
+- `<workdir>/logs/`: the per-host journal, the `/var/log/ipa*` tarballs, and the install and test run logs.
+- `IPA_TESTS_LOGSDIR` (inside the container): per-test logs from the framework (`--logfile-dir`). `down` and `collect_logs` also copy this tree to `<workdir>/logs/collected/<master>/ipa-env/logs`. Then `logs` can show it. See the `per-test` category below.
 
 ## Log analysis (`logs`)
 
-`freeipa-env logs` turns the collected artifacts into a triage view for
-resolving CI issues. With no `--category` it prints a per-category summary
-(source count + interesting-line count per category);
-`--category NAME` (repeatable, or `all`) prints the matching lines plus a
-tail per source file:
+`freeipa-env logs` turns the collected files into a triage view.
+
+- With no `--category`, it prints a summary for each category. The summary shows the number of sources and the number of interesting lines.
+- With `--category NAME`, it prints the matching lines and the tail of each source file. Use `--category all` for every category. You can repeat the option.
 
 ```
 freeipa-env logs ENV.YAML                        # category summary
 freeipa-env logs ENV.YAML --category tests       # failed tests, grouped by module
 freeipa-env logs ENV.YAML --category ds --category httpd --category kra  # several at once
-freeipa-env logs ENV.YAML --category tests --json  # machine-readable summary
+freeipa-env logs ENV.YAML --category tests --json  # summary in JSON
 freeipa-env logs --workdir DIR --category system --pattern 'OOM|segfault'
 ```
 
-Categories (each with a sensible default line filter, overridable via
-`--pattern REX`):
+Each category has a default line filter. You can replace it with `--pattern REX`.
 
-| category    | source                                   |
-|-------------|------------------------------------------|
-| `tests`     | `nosetests.xml` (JUnit): totals + failed/errored tests with messages and traceback tails, grouped by module |
-| `per-test`  | the framework's per-test log tree (one dir per test nodeid): per-host install/uninstall logs + journal, with the xunit status joined in |
-| `run`       | `logs/run.log` — the streamed install/test/uninstall console (FAILED/ERROR/summary lines) |
-| `install`   | `ipaserver-install.log` (ERROR/WARNING) |
-| `uninstall` | `ipaserver-uninstall.log` (ERROR/WARNING) |
-| `ds`        | 389-ds `errors` log (`- ERR -`/`- CRIT -` lines) |
-| `httpd`     | `error_log` — IPA framework errors + Python tracebacks (debug noise excluded) |
-| `kra` / `ca`| pki instance logs (`pki-tomcat/{kra,ca}` + spawn logs) |
-| `kdc`       | `krb5kdc.log` (error/crit/fatal) |
-| `samba`     | `/var/log/samba` (AD trust) |
-| `dns`       | BIND runtime logs (`named.run`) |
-| `ipa`       | per-operation logs under `/var/log/ipa/` (ERROR/CRITICAL) |
-| `system`    | boot journal: failed units, OOM, segfaults, watchdogs |
+| Category | Source |
+|---|---|
+| `tests` | `nosetests.xml` (JUnit). Totals, failed and errored tests with messages and traceback tails, grouped by module. |
+| `per-test` | The framework's per-test log tree. One directory for each test ID. It has the install and uninstall logs and the journal for each host. The xunit status is added. |
+| `run` | `logs/run.log`. The console output of install, test, and uninstall. FAILED, ERROR, and summary lines. |
+| `install` | `ipaserver-install.log`. ERROR and WARNING lines. |
+| `uninstall` | `ipaserver-uninstall.log`. ERROR and WARNING lines. |
+| `ds` | The 389-ds `errors` log. `- ERR -` and `- CRIT -` lines. |
+| `httpd` | `error_log`. IPA framework errors and Python tracebacks. Debug messages are removed. |
+| `kra`, `ca` | The pki instance logs (`pki-tomcat/{kra,ca}`) and the spawn logs. |
+| `kdc` | `krb5kdc.log`. error, crit, and fatal lines. |
+| `samba` | `/var/log/samba`. AD trust. |
+| `dns` | The BIND runtime logs (`named.run`). |
+| `ipa` | The per-operation logs in `/var/log/ipa/`. ERROR and CRITICAL lines. |
+| `system` | The boot journal. Failed units, OOM events, segfaults, and watchdogs. |
 
-Useful flags: `--pattern REX` (override a category's line filter),
-`--lines N` (matched lines per file, default 30), `--tail N` (0 disables),
-`--all` (print whole files unfiltered), `--host NAME`, `--json` (summary
-for scripting), `--refresh` (re-collect logs from a still-running
-environment before analyzing; a failed collection never clobbers existing
-artifacts). Daemon tarballs are extracted selectively into
-`<workdir>/logs/extracted/<host>/` and cached by mtime+size, so repeated
-calls are instant.
+Useful options:
 
-### Self-contained HTML report (`report`, `--html`)
+- `--pattern REX`: replace the line filter of a category.
+- `--lines N`: the number of matched lines for each file. The default is 30.
+- `--tail N`: the number of tail lines. Use 0 to turn it off.
+- `--all`: print each whole file, with no filter.
+- `--host NAME`: show one host only.
+- `--json`: print the summary for scripts.
+- `--refresh`: collect the logs again from an environment that still runs, before you analyze them. If the collection fails, the existing files are kept.
 
-`freeipa-env report` renders the collected artifacts into a single
-self-contained `results.html` (default `<workdir>/results.html`) for sharing
-or pasting into a ticket. It reuses the same `LogStore` / `loganalyze`
-machinery as `logs`, so it is **offline** (no network, no env file needed for
-an already-collected workdir) and **dependency-free** to view: all CSS is
-inlined, there is no JavaScript and no external asset, and sections collapse
-with the native `<details>` element. Each failed/errored/skipped test row
-carries its failure message and a traceback tail; the per-category log views
-are collapsed.
+`logs` extracts the daemon tarballs into `<workdir>/logs/extracted/<host>/`. It extracts only the needed files. It checks the mtime and size of each file. Repeated calls are fast.
+
+### Self-contained HTML report (`report`)
+
+`freeipa-env report` makes one file, `results.html`. The default location is `<workdir>/results.html`. Share this file or paste it into a ticket.
+
+The report uses the same code as `logs`. It works offline. It needs no environment file for a workdir that is already collected. It has no JavaScript and no external files. All CSS is inside the file. Sections collapse with the HTML `<details>` element.
+
+Each failed, errored, or skipped test row has its failure message and traceback tail.
 
 ```
-freeipa-env report --workdir DIR                 # <workdir>/results.html
-freeipa-env report --workdir DIR -o /tmp/r.html  # explicit output
-freeipa-env logs ENV.YAML --html                 # same report, as a logs variant
-freeipa-env tf-logs <request-id> --html          # fetch a TF request, then render
+freeipa-env report --workdir DIR                 # writes <workdir>/results.html
+freeipa-env report --workdir DIR -o /tmp/r.html  # choose the output file
+freeipa-env logs ENV.YAML --html                 # the same report, from logs
+freeipa-env tf-logs <request-id> --html          # download a TF request, then make the report
 ```
 
-The report is intentionally coarser than PRCI's in-image pytest-html `report.html`:
-it shows per-test status + duration from the xunit plus the shared per-category
-logs and the framework's per-test log trees (a `Per-test logs` section, one
-collapsed block per test nodeid with the xunit status joined in), but not
-per-test captured stdout (PRCI gets that from pytest-html running in the image,
-which this one does not add). When a per-stage `results.yaml` is present in the
-workdir (the TF
-transport uploads it with the request; see below) a `Stages` table shows each
-stage's result, duration and note.
+The report is less detailed than the `report.html` from PRCI. PRCI uses pytest-html inside the image. This report has these parts:
+
+- Per-test status and duration from the xunit file.
+- The shared log categories.
+- The per-test log trees. Each test has its own collapsed block, with its xunit status.
+
+It does not show the captured stdout of each test. The image in this repository does not run pytest-html.
+
+If the workdir has a `results.yaml` for each stage, the report adds a `Stages` table. The table shows the result, duration, and note of each stage. The Testing Farm transport uploads this file.
 
 ## Presets
 
-- `presets/base-xmlrpc.yaml` — the Azure **xmlrpc** job (1 master,
-  DNS+KRA, `test_xmlrpc` minus `test_dns_plugin.py`).
-- `presets/external-smoke.yaml` — external-provider smoke template.
-- `presets/azure/` — one preset per Azure CI job (the full recreation of
-  `ipatests/azure/azure_definitions/{base,gating}-fedora.yml`):
+- `presets/base-xmlrpc.yaml`: the Azure **xmlrpc** job. One master, DNS and KRA, and `test_xmlrpc` without `test_dns_plugin.py`.
+- `presets/external-smoke.yaml`: a template for external provider smoke tests.
+- `presets/azure/`: one preset for each Azure CI job. These presets recreate `ipatests/azure/azure_definitions/{base,gating}-fedora.yml`.
 
-| preset (`presets/azure/`) | Azure job | hosts | suite |
+| Preset (`presets/azure/`) | Azure job | Hosts | Suite |
 |---|---|---|---|
-| `base.yaml` | base | master | unit tests + `test_xmlrpc/test_dns_plugin.py` (`-k 'not test_dns_soa'`) |
+| `base.yaml` | base | master | Unit tests and `test_xmlrpc/test_dns_plugin.py` (`-k 'not test_dns_soa'`) |
 | `kerberos-flags.yaml` | kerberos_flags | master, client | `test_kerberos_flags.py` |
 | `forced-client-reenrollment.yaml` | forced_client_reenrollment | master, replica, client | `test_forced_client_reenrollment.py` |
 | `external-ca-install.yaml` | external_ca_ExternalCAInstall | master | `test_external_ca.py::TestExternalCAInstall` |
 | `simple-replication.yaml` | simple_replication | master, replica | `test_simple_replication.py` |
 | `service-permissions.yaml` | service_permissions | master | `test_service_permissions.py` |
-| `sudo.yaml` | sudo | master, client | `test_sudo.py` (deselects `TestSudo_Functional`) |
+| `sudo.yaml` | sudo | master, client | `test_sudo.py`. Deselects `TestSudo_Functional`. |
 | `external-ca.yaml` | external_ca_ExternalCA | master, replica, client | `test_external_ca.py::TestExternalCA` |
-| `topologies-testconfig.yaml` | topologies_and_testconfig | master | `test_topologies.py`, `test_testconfig.py` (no installs) |
+| `topologies-testconfig.yaml` | topologies_and_testconfig | master | `test_topologies.py`, `test_testconfig.py`. No installs. |
 | `external-ca-constraints.yaml` | external_ca_ExternalCAConstraints | master, client | `test_external_ca.py::TestExternalCAConstraints` |
 | `membermanager.yaml` | membermanager | master | `test_membermanager.py` |
 | `netgroup.yaml` | netgroup | master | `test_netgroup.py` |
@@ -391,94 +435,93 @@ stage's result, duration and note.
 | `caless-to-ca-full.yaml` | ServerReplicaCALessToCAFull | master, replica | `test_caless.py::TestServerReplicaCALessToCAFull` |
 | `external-ca-self-external-self.yaml` | external_ca_SelfExternalSelf | master | `test_external_ca.py::TestSelfExternalSelf` |
 
-The `xmlrpc` job is `presets/base-xmlrpc.yaml`. Base-pipeline jobs run in
-`mode: base` (run-base-tests.sh: install → test → uninstall); gating jobs
-run in `mode: integration`, where the framework performs the per-class
-install/uninstall from the multihost config. Per-host memory limits mirror
-the Azure definitions.
+Run modes:
+
+- Base pipeline jobs use `mode: base`. The steps are install, test, and uninstall. The script is `run-base-tests.sh`.
+- Gating jobs use `mode: integration`. The framework does the install and uninstall for each class. It reads the multihost config.
+
+Each host gets the same memory limits as in the Azure definitions.
 
 ## Migrated PRCI definitions (`migrate`)
 
-`freeipa-env migrate ipatests/prci_definitions/<def>.yaml` converts a PRCI
-definition into freeipa-env presets (one per job) under
-`presets/prci/<def>/`, with a `MIGRATED.md` report. Regenerate after PRCI
-definition changes; options: `-o DIR`, `--jobs NAME` (substring filter).
+`freeipa-env migrate ipatests/prci_definitions/<def>.yaml` converts a PRCI definition. It writes one preset for each job under `presets/prci/<def>/`. It also writes a `MIGRATED.md` report.
 
-`presets/prci/` currently contains all 11 PRCI definitions
-(1301 presets):
+Run `migrate` again after you change a PRCI definition. Options:
 
-dir | PRCI file | presets
----|---|---
-`gating/` | `gating.yaml` | 31
-`nightly-latest/` | `nightly_latest.yaml` | 185
-`nightly-latest-389ds/` | `nightly_latest_389ds.yaml` | 48
-`nightly-latest-pki/` | `nightly_latest_pki.yaml` | 91
-`nightly-latest-selinux/` | `nightly_latest_selinux.yaml` | 185
-`nightly-latest-sssd/` | `nightly_latest_sssd.yaml` | 20
-`nightly-latest-testing/` | `nightly_latest_testing.yaml` | 185
-`nightly-latest-testing-selinux/` | `nightly_latest_testing_selinux.yaml` | 185
-`nightly-previous/` | `nightly_previous.yaml` | 185
-`nightly-rawhide/` | `nightly_rawhide.yaml` | 185
-`temp-commit/` | `temp_commit.yaml` | 1
+- `-o DIR`: the output directory.
+- `--jobs NAME`: keep only the jobs whose name contains NAME.
 
-Mapping rules:
+`presets/prci/` has all 11 PRCI definitions. It has 1301 presets in total.
 
-- **topology → hosts**: `ipaserver` → 1 master (base mode);
-  `master[_Nrepl]_Mclient` → master/replica/client hosts (integration
-  mode when >1 IPA host); AD tokens `ad` / `adroot_adchild_adtree` add
-  external AD hosts with roles `ad`, `ad_subdomain`, `ad_treedomain`.
-- **topology memory → per-role limits**, split evenly (rounded to 100 MiB,
-  floor 512 MiB) — PRCI numbers are per-topology totals.
-- **test_suite → `run.tests`** (space-separated list preserved).
-- **class Build** → skipped (the `freeipa-ci` image pipeline replaces it);
-  **ipa_ipa_trust** topologies → skipped (two IPA domains; the preset
-  model supports one IPA domain plus AD domains).
-- **RunWebuiTests** → `mode: base` with a NOTE: PRCI provisions a browser
-  + selenium; `freeipa-ci/full` does not include them, so those presets
-  will not pass as-is.
+| Directory | PRCI file | Presets |
+|---|---|---|
+| `gating/` | `gating.yaml` | 31 |
+| `nightly-latest/` | `nightly_latest.yaml` | 185 |
+| `nightly-latest-389ds/` | `nightly_latest_389ds.yaml` | 48 |
+| `nightly-latest-pki/` | `nightly_latest_pki.yaml` | 91 |
+| `nightly-latest-selinux/` | `nightly_latest_selinux.yaml` | 185 |
+| `nightly-latest-sssd/` | `nightly_latest_sssd.yaml` | 20 |
+| `nightly-latest-testing/` | `nightly_latest_testing.yaml` | 185 |
+| `nightly-latest-testing-selinux/` | `nightly_latest_testing_selinux.yaml` | 185 |
+| `nightly-previous/` | `nightly_previous.yaml` | 185 |
+| `nightly-rawhide/` | `nightly_rawhide.yaml` | 185 |
+| `temp-commit/` | `temp_commit.yaml` | 1 |
 
-**AD hosts are external.** PRCI provisions the AD DCs itself; here each AD
-host is an `address` placeholder (RFC 5737) plus a placeholder FQDN — edit
-both before `freeipa-env up` (the preset footer lists every EDIT ME). The
-IPA containers resolve the AD FQDNs via `/etc/hosts` entries written at
-`up`; trust setup itself (AD admin credentials, DNS) is done by the tests
-via `ad_admin_name`/`ad_admin_password` (defaults `Administrator`/
-`Secret123`). A Samba AD DC (or Windows) reachable over SSH for log
-collection works; Windows-only DCs need `user` adjusted.
+### Mapping rules
+
+- **Topology to hosts.** `ipaserver` gives one master, in base mode. `master[_Nrepl]_Mclient` gives master, replica, and client hosts. These use integration mode when there is more than one IPA host. The AD tokens `ad` and `adroot_adchild_adtree` add external AD hosts. Their roles are `ad`, `ad_subdomain`, and `ad_treedomain`.
+- **Topology memory to limits.** PRCI gives a total for each topology. `migrate` divides it evenly between the roles. It rounds to 100 MiB. The minimum is 512 MiB.
+- **test_suite to `run.tests`.** The space-separated list is kept.
+- **class Build.** Skipped. The `freeipa-ci` image pipeline replaces it.
+- **ipa_ipa_trust topologies.** Skipped. These need two IPA domains. The preset model supports one IPA domain and AD domains.
+- **RunWebuiTests.** Uses `mode: base`. A note is added. PRCI installs a browser and selenium. The `freeipa-ci/full` image does not have them. These presets fail as they are.
+
+### AD hosts are external
+
+PRCI creates its own AD domain controllers. This repository does not. Each AD host is an `address` placeholder from RFC 5737, with a placeholder FQDN. Edit both before you run `freeipa-env up`. The footer of each preset lists every line marked EDIT ME.
+
+`up` writes the AD FQDNs into `/etc/hosts` on the IPA containers. The tests set up the trust. They use `ad_admin_name` and `ad_admin_password`. The defaults are `Administrator` and `Secret123`.
+
+A Samba AD DC works if SSH can reach it for log collection. Windows-only DCs need the `user` value changed.
 
 ## Run queues and the supervisor (`queue`)
 
-Queues run ordered preset lists on a pool of **pre-allocated runners**
-(hosts with ssh + podman + systemd, e.g. the lab VMs) — the replacement
-for PRCI's per-PR job scheduling. Queue files live in `queues/`:
+A queue runs an ordered list of presets. It uses a pool of **pre-allocated runners**. A runner is a host with SSH, podman, and systemd. The lab VMs are runners. Queues replace the per-PR job scheduling of PRCI.
 
-* `azure.yaml` — the 16 Azure CI jobs (Azure ran them in parallel; the
-  queue order is conventional);
-* one per PRCI definition, named like the preset dirs
-  (`gating.yaml`, `nightly-latest.yaml`, …) — each in the PRCI
-  definition's job order, generated with `freeipa-env queue generate`
-  (regenerate after PRCI definition changes).
+Queue files are in `queues/`:
 
-Queue format: an ordered `jobs:` list of preset paths (relative to
-`env/`), a directory entry (trailing `/`) expanding to all presets in
-it sorted, or per-job dicts (`preset`/`dir` + `note`).
+- `azure.yaml`: the 16 Azure CI jobs. Azure ran them in parallel. The order in the queue is the usual order.
+- One file for each PRCI definition. The names match the preset directories, for example `gating.yaml` and `nightly-latest.yaml`. Each file keeps the job order of its PRCI definition. Make them with `freeipa-env queue generate`. Run it again after a PRCI definition changes.
 
-**Image references are build channels, never builds.** A preset pins
-no build — it names a *channel*: `image: freeipa-current` (the current
-release's newest build), `freeipa-next` (the next release, PRCI
-`fedora-rawhide`) or `freeipa-previous` (the previous release). This
-mirrors PRCI, where each definition file references one build generation
-and every job in it uses that one build. `images/build.sh --channel
-NAME` tags each build with the channel tag (`freeipa-ci/full:<channel>`)
-alongside the immutable provenance tag (`freeipa-ci/full:<dist>-<sha>`).
+### Queue format
 
-Resolving a channel to a concrete image on a given host is a **provider
-task**: the podman provider maps the channel to its podman tag and
-resolves it against the local image store at `up` time (and
-`freeipa-env resolve ENV.YAML` does just that one thing, printing
-`<ref> <concrete> <image_id>`); the external provider ignores it —
-external hosts run their own IPA. A preset may also name an explicit
-image reference (passed through unchanged) if you need to pin a build.
+A queue file has a `jobs:` list. Each entry is one of these:
+
+- A preset path, relative to `env/`.
+- A directory path that ends with `/`. It expands to all presets in that directory, sorted.
+- A dict with `preset` or `dir`, and an optional `note`.
+
+### Image references are channels
+
+A preset does not name a build. It names a **channel**:
+
+- `image: freeipa-current`: the newest build of the current release.
+- `image: freeipa-next`: the next release. PRCI calls it `fedora-rawhide`.
+- `image: freeipa-previous`: the previous release.
+
+PRCI uses one build generation for each definition file. Every job in the file uses that build. The channels do the same thing here.
+
+`images/build.sh --channel NAME` adds the channel tag, `freeipa-ci/full:<channel>`. It also adds the fixed provenance tag, `freeipa-ci/full:<dist>-<sha>`.
+
+The provider finds the image for a channel on each host. This is a provider task.
+
+- The podman provider maps the channel to a podman tag. It checks the tag in the local image store during `up`.
+- `freeipa-env resolve ENV.YAML` does only this step. It prints `<ref> <concrete> <image_id>`.
+- The external provider ignores the channel. External hosts run their own IPA.
+
+A preset can also name an explicit image reference. The reference is used as it is. Use this to pin a build.
+
+### Run a queue
 
 ```
 freeipa-env queue run queues/gating.yaml \
@@ -487,129 +530,124 @@ freeipa-env queue run queues/gating.yaml \
     [--job-timeout SECS] [--outdir DIR] [--no-bootstrap] [--ssh-key FILE]
 ```
 
-The supervisor, per run:
+For each run, the supervisor does these steps:
 
-1. validates every preset (parse + existence),
-2. checks each runner (ssh + podman) and rsyncs the local ci-freeipa tree to
-   `--remote-ci` (default `/root/freeipa-ci/ci`),
-3. asks each runner's provider to resolve every distinct preset's image
-   references (remote `freeipa-env resolve`; fail fast on a missing
-   image, before any job starts; resolutions are recorded per runner in
-   `summary.md`),
-4. schedules: each runner pulls the next job from the front of the list,
-   one job at a time — `up` → `run` → `down`, under a per-job remote
-   `timeout` (default 4 h), workdir `/root/jobs/<job-key>` per job.
-5. writes `summary.tsv` / `summary.md` + per-job transcripts to `--outdir`
-   (default `./<queue>.queue`); exit code 0 only when every job passed.
+1. Checks every preset. It parses each file and checks that it exists.
+2. Checks each runner for SSH and podman. Copies the local ci-freeipa tree to `--remote-ci`. The default is `/root/freeipa-ci/ci`.
+3. Asks each runner to find the images for each preset. This runs `freeipa-env resolve` on the runner. If an image is missing, the run stops before any job starts. The results are saved per runner in `summary.md`.
+4. Schedules the jobs. Each runner takes the next job from the front of the list. It runs one job at a time. Each job runs `up`, then `run`, then `down`. Each job has a remote timeout. The default is 4 hours. Each job uses the workdir `/root/jobs/<job-key>`.
+5. Writes `summary.tsv`, `summary.md`, and a transcript for each job, in `--outdir`. The default is `./<queue>.queue`. The exit code is 0 only when every job passes.
 
-Ordering semantics: with one runner the jobs run exactly in queue order;
-with N runners each runner's subsequence preserves queue order (FIFO
-dequeue) — the same shape as a PRCI run queue spread over a pool of VMs.
-`--keep-on-failure` skips `down` on a failed job so the environment stays
-on the runner for `freeipa-env logs --refresh`-style triage (remember to
-`down` manually before reusing the runner's capacity).
+### Job order
+
+- With one runner, the jobs run in the queue order.
+- With N runners, each runner gets its own part of the queue. Each part keeps the queue order. The jobs leave the queue first in, first out.
+
+`--keep-on-failure` skips `down` for a failed job. The environment stays on the runner. Use `freeipa-env logs --refresh` to look at it. Run `down` yourself before you reuse the runner.
 
 ## Runner transports (`--runner`)
 
-A *runner* is a host that can execute a queued job (podman + systemd + a
-copy of the ci-freeipa tree). Each `--runner SPEC` names one transport:
+A runner is a host that runs queued jobs. It needs podman, systemd, and a copy of the ci-freeipa tree. Each `--runner SPEC` names one transport.
 
-| spec | transport | how jobs run |
+| Spec | Transport | How the jobs run |
 |---|---|---|
-| `user@host[:port]` (default) | **ssh** | a pre-allocated runner reached over key-based ssh; the ci-freeipa tree is rsynced there and `up`/`run`/`down` execute remotely |
-| `local` | **local** | the control node is the runner; no ssh, the same job flow runs as local subprocesses (needs `podman` on the control node) |
-| `testing-farm` | **TF** | no ssh, no pre-allocated host: a runner's queued jobs run as **one Testing Farm** request whose guest provisions once, builds the SRPM + channel images once, and runs the presets in sequence |
+| `user@host[:port]` (default) | **SSH** | A runner that you set up. The ci-freeipa tree is copied to it. `up`, `run`, and `down` run on the runner. |
+| `local` | **Local** | The control node is the runner. No SSH is used. The same steps run as local processes. You need podman on the control node. |
+| `testing-farm` | **TF** | No SSH and no host you set up. The jobs of one runner run as **one Testing Farm request**. The guest is set up once. It builds the SRPM and the channel images once. Then it runs the presets in order. |
 
-All three share one job recipe (`up` → `run` → `down`, under a per-job
-timeout; `down` is unbounded and must complete), so queue semantics and the
-`summary.tsv`/`summary.md` + per-job transcript shapes are transport-neutral.
+All three transports use the same job steps: `up`, `run`, and `down`. Each job has a timeout. `down` has no timeout and must finish. The output files (`summary.tsv`, `summary.md`, and the transcripts) have the same form for each transport.
 
-**Runner-style paths are de-rooted.** Remote/local job paths are written
-`~/...` (unquoted), so the *remote* shell expands them against the ssh user's
-home — for a non-root user that keeps the tree out of `/` (the default
-`--remote-ci ~/freeipa-ci/ci`, `--jobs-dir ~/freeipa-jobs` work unchanged for
-any user). The local runner expands `~/...` against the local user's home.
+### Paths on runners
+
+The remote and local job paths start with `~/`. The remote shell expands them to the home directory of the SSH user. A non-root user keeps the tree out of `/`. The defaults `--remote-ci ~/freeipa-ci/ci` and `--jobs-dir ~/freeipa-jobs` work for any user. The local runner expands `~/` to the home directory of the local user.
 
 ### Testing Farm transport
 
-`--runner testing-farm` sends each runner's queued jobs to the public
-[Testing Farm](https://docs.testing-farm.io/) API as **one request** (one
-request per runner subsequence). There is no pre-allocated host and no root
-on any machine you control: TF provisions a fresh Fedora guest, checks out
-the **FreeIPA repo under test** itself, and runs the pinned plan from that
-checkout — the plan discovers this repo's test at the pinned ref. The guest
-builds the SRPM and every needed channel image **once**, then runs the presets in
-sequence, reusing the baked images. A preset **PASSes** only when the request
-completes and that preset's own `results.yaml` grades `passed`; the request
-itself fails if any preset's run step fails.
+Use `--runner testing-farm` to send the jobs to the public [Testing Farm](https://docs.testing-farm.io/) API. Each runner's jobs are one request.
 
-Required: an API token — pass `--tf-token TOKEN` or set the
-`TESTING_FARM_API_TOKEN` environment variable. The repo the guest clones is
-`--tf-repo-url` (default: the `remote.origin.url` of `--freeipa-src`) at
-`--tf-ref` (default: the current branch of `--freeipa-src`); both should point at a
-**publicly pushed** commit, since TF clones over the network. Other knobs:
-`--tf-url` (API base), `--tf-arch` (default `x86_64`), `--tf-compose`
-(default `Fedora-44`), `--tf-plan` (the plan node in the FreeIPA repo, default
-`/ci/tmt/plans/freeipa-env`), and `--tf-variable KEY=VALUE` (repeatable, extra
-variables for the request).
+Testing Farm does these things:
 
-**The guest builds the SRPM itself — no pre-supplied SRPM.** The tmt plan's
-`prepare` step (`how: install`) places `git`, `podman`, the autotools
-toolchain and every `BuildRequires` of the branch's `freeipa.spec.in` on the guest (the
-[synta](https://pagure.io/synta) pattern). TF's pipeline only syncs the fmf
-tree to the guest as a plain file copy (no `.git`, no submodule contents),
-so the tmt test clones the repo under test itself first — `git clone --recursive` +
-`git checkout` of `--tf-repo-url`/`--tf-ref` — then produces `freeipa`'s
-SRPM on the guest: `autoreconf -i`, `./configure` with the spec's
-rpm-equivalent flags, and `make srpms`. It bakes each of the presets'
-channel images from that SRPM with `images/build.sh --srpm` **once each**
-(a channel already baked is reused), then runs every preset in sequence —
-each a fresh `freeipa-env up` → `run` → `down` under its own `--job-timeout`
-— and the request fails if any run step fails. Pass `--srpm <URL>` only to
-override with a prebuilt SRPM (it must be an HTTP(S) URL the guest can fetch).
+- It creates a new Fedora guest. You do not need a host or root access on your machines.
+- It clones the **FreeIPA repository under test**.
+- It runs the pinned plan from that checkout. The plan finds this repository's test at the pinned ref.
 
-**Per-stage results + downloadable job artifacts.** The tmt test declares
-`result: custom`, so each preset is reported with one result per stage
-(`srpm-build`, `image-build`, `env-up`, `test-run`, `env-down`) plus a parent
-result, each with its own console log; the batch as a whole carries a parent
-result that is `fail` when any preset's run step fails. Each preset's workdir
-artifacts (run console, `nosetests.xml`, collected per-host logs) are
-reparented under `.../data/artifacts/<preset-key>/` and its `results.yaml`
-under `.../data/<preset-key>/`, so every preset is downloadable and gradable
-on its own.
+The guest builds the SRPM and each channel image once. Then it runs the presets in order, and it reuses the images.
 
-**Analyze a TF request's artifacts with `logs`.** `freeipa-env tf-logs
-<request-id>` downloads a finished request's artifacts into a local workdir in
-the same layout a local/ssh job uses, then runs the usual `logs` machinery —
-no env file needed. A batched request stores **one workdir per preset**
-(`<workdir>/<preset-key>/` with its own `logs/`, `stages/`, `results.yaml`)
-and a single `report` per preset (`--html` writes one `results.html` per
-preset); a legacy single-preset request stores one flat workdir. The request
-id is the one printed in the `queue run` transcript (or from the TF API).
-`--category`/`--pattern`/`--json`/`--host` work exactly as for `logs`;
-`--workdir DIR` picks where the artifacts are stored (default
-`./tf-<request-id>.env`) and re-running against the same dir reuses the
-downloaded files.
+A preset passes only when these two things are true:
 
-A batched request was validated end-to-end: the guest built the SRPM and
-channel image once, ran each queued preset in sequence, and `tf-logs --html`
-produced one `results.html` per preset alongside the batch parent.
+- The request completes.
+- The preset's own `results.yaml` shows `passed`.
+
+The request fails when the run step of any preset fails.
+
+You need an API token. Pass `--tf-token TOKEN`, or set the `TESTING_FARM_API_TOKEN` environment variable.
+
+Other options:
+
+- `--tf-repo-url`: the repository that the guest clones. The default is the `remote.origin.url` of `--freeipa-src`.
+- `--tf-ref`: the ref to check out. The default is the current branch of `--freeipa-src`.
+- `--tf-url`: the API base URL.
+- `--tf-arch`: the architecture. The default is `x86_64`.
+- `--tf-compose`: the compose. The default is `Fedora-44`.
+- `--tf-plan`: the plan in the FreeIPA repository. The default is `/ci/tmt/plans/freeipa-env`.
+- `--tf-variable KEY=VALUE`: an extra request variable. You can repeat this option.
+
+Testing Farm clones over the network. Use a commit that is **pushed to a public repository**.
+
+#### The guest builds the SRPM
+
+You do not supply an SRPM. The tmt plan `prepare` step installs these packages on the guest:
+
+- `git`, `podman`, and the autotools toolchain.
+- Every BuildRequires of the branch's `freeipa.spec.in`.
+
+This follows the [synta](https://pagure.io/synta) pattern.
+
+Testing Farm copies the fmf tree as plain files. So the tmt test clones the repository first. It runs `git clone --recursive` and then `git checkout`, using `--tf-repo-url` and `--tf-ref`. Then it builds the SRPM:
+
+1. `autoreconf -i`
+2. `./configure` with the flags that match the spec.
+3. `make srpms`
+
+For each preset, the guest bakes the channel image from the SRPM with `images/build.sh --srpm`. It bakes each channel once. A channel that is already baked is reused.
+
+Then the guest runs each preset in order. Each preset runs `up`, `run`, and `down` with its own `--job-timeout`. The request fails if any run step fails.
+
+To use a prebuilt SRPM, pass `--srpm <URL>`. The URL must be HTTP or HTTPS, and the guest must be able to fetch it.
+
+#### Results and artifacts
+
+The tmt test uses `result: custom`. Each preset reports one result for each stage:
+
+- `srpm-build`
+- `image-build`
+- `env-up`
+- `test-run`
+- `env-down`
+
+It also reports a parent result for the preset. Each result has its own console log. The batch has a parent result. It is `fail` when the run step of any preset fails.
+
+The artifacts of each preset go to `.../data/artifacts/<preset-key>/`. These are the run console, `nosetests.xml`, and the collected per-host logs. The `results.yaml` file goes to `.../data/<preset-key>/`. You can download and check each preset separately.
+
+#### Analyze a TF request with `logs`
+
+`freeipa-env tf-logs <request-id>` downloads the artifacts of a finished request. It puts them in a local workdir. The layout is the same as for a local or SSH job. Then it runs `logs`. You do not need an environment file.
+
+A batched request has one workdir for each preset. The path is `<workdir>/<preset-key>/`. Each one has its own `logs/`, `stages/`, and `results.yaml`. `--html` writes one `results.html` for each preset. A request with one preset has one flat workdir.
+
+The request ID is printed in the `queue run` transcript. You can also get it from the TF API. `--category`, `--pattern`, `--json`, and `--host` work as they do for `logs`. `--workdir DIR` sets where the artifacts go. The default is `./tf-<request-id>.env`. If you run the command again on the same directory, it reuses the files that are already downloaded.
 
 ```
 freeipa-env tf-logs <request-id>
 freeipa-env tf-logs <request-id> --category tests --category run --lines 20
-freeipa-env tf-logs <request-id> --html          # fetch, then results.html
+freeipa-env tf-logs <request-id> --html          # download, then make results.html
 ```
 
-`tf-logs` also fetches the job's per-stage `results.yaml` (the tmt test's
-`result: custom` outcome, uploaded with the request) into the workdir, so the
-`report`/`--html` output includes a `Stages` table (per-stage result,
-duration, note) alongside the per-test xunit table and the collapsed
-log categories.
+`tf-logs` also downloads the `results.yaml` of each stage. The `report` then shows the `Stages` table.
 
-Fetching a finished request needs no token: both the request state
-(`GET /v0.1/requests/<id>`) and the artifact store are public. (A token is
-only needed to *submit* a request via `queue run --runner testing-farm`.)
+You do not need a token to download a finished request. The request state (`GET /v0.1/requests/<id>`) and the artifact store are public. You need a token only to submit a request with `queue run --runner testing-farm`.
+
+#### Example
 
 ```
 freeipa-env queue run queues/gating.yaml \
@@ -617,72 +655,68 @@ freeipa-env queue run queues/gating.yaml \
     --tf-token $TESTING_FARM_API_TOKEN \
     --tf-repo-url https://github.com/abbra/freeipa.git \
     --tf-ref modrnize-ci \
-    --job-timeout 21600        # one build + several runs (default 4 h/preset)
+    --job-timeout 21600        # one build and several runs. The default is 4 hours for each preset.
 ```
 
-The supervisor polls the single request to a terminal state under a batch
-deadline (`--job-timeout`, default 14400 = 4 h per preset, plus a build
-buffer) and cancels it if the deadline is reached; a full on-guest build
-(SRPM + binary RPMs + image) happens once and is shared by every preset in
-the request. `--dry-run` with a `testing-farm` runner prints the exact batch
-request JSON that would be submitted (a token is still required, but nothing
-is actually sent).
+The supervisor checks the request until it ends. The batch deadline is `--job-timeout`. The default is 14400 seconds (4 hours) for each preset, plus a buffer for the build. If the deadline passes, the supervisor cancels the request.
 
-**Released packages, no FreeIPA checkout (the default).** Without
-`--freeipa-src`, `--tf-repo-url`, `--srpm` and `--copr` the packages under
-test are the ones Fedora ships: nothing is built and no
-FreeIPA repo is involved, so the request names **this** repository and its
-own plan `/tmt/plans/distro` (`tmt/plans/distro.fmf`: `prepare` installs
-only `podman` and `python3-pyyaml`, the test comes from the same ref, so
-there is no pin to bump), at this
-checkout's origin and current branch, which must be pushed. The guest bakes
-the channel images for its own release, so the compose picks the Fedora
-under test:
+The full build (SRPM, binary RPMs, and the image) runs once. Every preset in the request uses the result.
+
+`--dry-run` with the `testing-farm` runner prints the exact batch request JSON. It does not send it. You still need a token.
+
+#### Released packages, no FreeIPA checkout (the default)
+
+If you do not pass `--freeipa-src`, `--tf-repo-url`, `--srpm`, or `--copr`, the tests use the packages that Fedora ships. Nothing is built. This repository is not a FreeIPA repository, but the request names it. The request uses its plan `/tmt/plans/distro` (`tmt/plans/distro.fmf`).
+
+- `prepare` installs only `podman` and `python3-pyyaml`.
+- The test comes from the same ref, so you do not change a pin.
+- The request uses the origin and current branch of this checkout. You must push the branch first.
+
+The guest builds the channel images for its own release. The compose chooses the Fedora version:
 
 ```
 freeipa-env queue run queues/azure.yaml \
     --runner testing-farm --tf-compose Fedora-45
 ```
 
-To run that plan from another clone of this repository, name it with
-`--tf-repo-url`/`--tf-ref` and pass `--ipa-from-distro` explicitly (a bare
-`--tf-repo-url` means a FreeIPA repo to build).
+To run that plan from another clone of this repository, use `--tf-repo-url` and `--tf-ref`. Also pass `--ipa-from-distro`. If you pass only `--tf-repo-url`, the tool expects a FreeIPA repository to build.
 
-**Packages from a COPR repository.** Add `--copr OWNER/PROJECT` (repeatable)
-to the same command: the same plan runs, and the guest installs the IPA
-packages from the COPR and the distribution together, for its own release
-(the COPR must publish builds for that Fedora).
+#### Packages from a COPR repository
+
+Add `--copr OWNER/PROJECT` to the same command. You can repeat this option. The same plan runs. The guest installs the IPA packages from the COPR and from the distribution together. The COPR must have builds for that Fedora version.
 
 ## Fedora dist-git lane (packaging PR CI)
 
-Fedora dist-git CI (Packit) runs a **Koji scratch build** for every dist-git
-PR before it runs the tests, and passes its task id to the test request as
-`KOJI_TASK_ID`. The test REUSES that build: `tmt/tests/freeipa-env/
-koji-rpms.py` reads the task's `buildArch` subtask results and downloads
-the binary RPMs (x86_64 + noarch, debuginfo/debugsource excluded) from
-kojipkgs; the channel image is baked from them with `build.sh --rpms` --
-no SRPM, no build image, no rpmbuild. The scratch build is for the PR's
-target dist, so this lane bakes the base/channel images for the guest's
-dist (`images/build.sh --dist`, `base/Dockerfile` takes `ARG DIST`;
-rawhide guests map to the rolling `rawhide` toolbox tag).
+Fedora dist-git CI (Packit) runs a **Koji scratch build** for each dist-git PR. It runs the scratch build before the tests. It passes the task ID to the test request as `KOJI_TASK_ID`.
 
-Fallback when no scratch build was made (manual runs, a CI without Packit):
-with `FREEIPA_DISTGIT=1` the test builds the SRPM from the dist-git
-checkout the plan itself ships -- a dist-git repo carries the spec, the
-patches, and a `sources` file with the tarball hashes, no configure.ac.
-`tmt/tests/freeipa-env/distgit-srpm.sh` takes the plan tree (`$TMT_TREE`,
-which the CI syncs to the guest), fetches every `sources` entry from the
-Fedora lookaside, and runs `rpmbuild -bs`; the channel image is then baked
-from that SRPM with `--builddep` (the build image tops up any BuildRequires
-the PR's spec adds beyond the baked list) and the guest's dist. Overrides:
-`FREEIPA_DISTGIT_DIR` (tree path, default `$TMT_TREE`),
-`FREEIPA_DISTGIT_SPEC` (spec file name), `FREEIPA_DISTGIT_PKG` (lookaside
-package name, default the spec's `Name:`), `FREEIPA_LOOKASIDE_URL`
-(lookaside base).
+The test uses that build. The file `tmt/tests/freeipa-env/koji-rpms.py` reads the `buildArch` subtask results of the task. It downloads the binary RPMs from kojipkgs. It downloads x86_64 and noarch RPMs. It leaves out debuginfo and debugsource.
 
-The dist-git-side plan is the same pin as the upstream one, with a smaller
-`prepare` (the binary build happens inside the build image, so the guest
-needs no BuildRequires):
+The channel image is made from these RPMs with `build.sh --rpms`. No SRPM is needed. No build image is needed. No rpmbuild runs.
+
+The scratch build targets the PR's Fedora dist. So this lane makes the base and channel images for the dist of the guest. It uses `images/build.sh --dist`. `base/Dockerfile` uses `ARG DIST`. A rawhide guest uses the rolling `rawhide` toolbox tag.
+
+### Fallback: no scratch build
+
+Use this fallback for manual runs, or for a CI system without Packit. Set `FREEIPA_DISTGIT=1`. The test then builds the SRPM from the dist-git checkout in the plan. A dist-git repository has the spec, the patches, and a `sources` file with the tarball hashes. It does not have `configure.ac`.
+
+`tmt/tests/freeipa-env/distgit-srpm.sh` does these steps:
+
+1. Reads the plan tree at `$TMT_TREE`. The CI copies this tree to the guest.
+2. Downloads each entry of `sources` from the Fedora lookaside.
+3. Runs `rpmbuild -bs`.
+
+Then the channel image is made from the SRPM with `--builddep`. The build image adds any BuildRequires that the PR's spec adds. The image is for the guest's dist.
+
+Override settings:
+
+- `FREEIPA_DISTGIT_DIR`: the tree path. The default is `$TMT_TREE`.
+- `FREEIPA_DISTGIT_SPEC`: the spec file name.
+- `FREEIPA_DISTGIT_PKG`: the package name in the lookaside. The default is the `Name:` of the spec.
+- `FREEIPA_LOOKASIDE_URL`: the base URL of the lookaside.
+
+### Dist-git plan
+
+The dist-git plan uses the same pin as the upstream plan. Its `prepare` step is smaller. The binary build runs in the build image, so the guest needs no BuildRequires.
 
 ```yaml
 discover:
@@ -696,102 +730,84 @@ prepare:
 execute:
   how: tmt
 environment:
-  # fallback source when the request carries no KOJI_TASK_ID
+  # fallback source when the request has no KOJI_TASK_ID
   FREEIPA_DISTGIT: "1"
   FREEIPA_JOBS: '[{"key": "base-unit", "preset_rel": "presets/azure/base.yaml"},
                   {"key": "base-xmlrpc", "preset_rel": "presets/base-xmlrpc.yaml"}]'
 ```
 
-The selected suites are whatever `FREEIPA_JOBS` lists (presets from this
-repo). Source precedence on the guest: `FREEIPA_SRPM_URL` > `KOJI_TASK_ID`
-(scratch-build reuse) > `FREEIPA_DISTGIT` > the upstream clone/SRPM build.
+`FREEIPA_JOBS` lists the suites that run. The presets come from this repository.
+
+The guest chooses the source in this order:
+
+1. `FREEIPA_SRPM_URL`
+2. `KOJI_TASK_ID` (reuses the scratch build)
+3. `FREEIPA_DISTGIT`
+4. The upstream clone and SRPM build
 
 ## Test the packages Fedora ships (the default)
 
-When no other source is named (no `--srpm`/`build.srpm`, no `--rpms`, no
-`--copr`; `--copr` alone installs from that COPR, see the end of this
-section) the image is baked from the distribution's own packages, to test
-a Fedora release as released: `images/build.sh` runs `dnf -y install` of
-every IPA
-subpackage (the server with DNS and trust-ad, the client, the `python3-*`
-bits and `python3-ipatests`) against the repositories of `--dist` as the
-`fedora-toolbox` image enables them (`fedora` and `updates`, not
-`updates-testing`). The tests that run are the ones that release's
-`python3-ipatests` installs, so they always match the packages. The image
-carries the label `source: distro`; `freeipa-env show` prints it next to the
-installed builds. `--ipa-from-distro` states the choice explicitly and is
-refused together with `--copr` or `--srpm` (with a
-COPR enabled dnf would prefer its builds and the result would no longer be
-the distribution's).
+If you do not name a source, the image uses the packages from the distribution. A source is named by `--srpm` or `build.srpm`, by `--rpms`, or by `--copr`. `--copr` alone installs from that COPR. See the end of this section.
 
-The image is a snapshot of the repositories at bake time: rebake to pick up
-newer updates. `--add-ipa-package SPEC` adds a package to the default
-list, `--ipa-packages 'SPECS'` replaces the list.
+The image is made from the distribution's own packages. This tests a Fedora release as it was released.
 
-- **Single machine, a dedicated image** — the safe choice on a host that
-  also holds a worktree or COPR build, because a channel image that is
-  already present is never rebuilt and `up` would then test that one:
+`images/build.sh` runs `dnf -y install` for each IPA subpackage. It installs these packages:
+
+- The server, with DNS and trust-ad.
+- The client.
+- The `python3-*` packages.
+- `python3-ipatests`.
+
+The packages come from the repositories of `--dist`. These are the repositories that `fedora-toolbox` enables: `fedora` and `updates`. `updates-testing` is not used.
+
+The tests that run are the tests that `python3-ipatests` of that release installs. So the tests always match the packages.
+
+The image has the label `source: distro`. `freeipa-env show` prints this label with the installed builds.
+
+`--ipa-from-distro` states this choice. It cannot be used with `--copr` or `--srpm`. A COPR gives dnf its own builds. The result would then not be the distribution's.
+
+The image is a snapshot of the repositories at bake time. To get newer updates, bake the image again.
+
+- `--add-ipa-package SPEC` adds a package to the default list.
+- `--ipa-packages 'SPECS'` replaces the list.
+
+### Ways to use it
+
+- **One machine, a dedicated image.** Use this on a host that also has a worktree or a COPR build. A channel image that is already present is never built again. So `up` would test that image. Use this command:
 
   ```
   images/build.sh --dist 45 --tag freeipa-distro
   ```
 
-  The env file names it directly, `image: freeipa-distro/full:45` with
-  `dist: 45`. To run a catalog preset against it, copy the preset and change
-  those two lines.
+  In the env file, set `image: freeipa-distro/full:45` and `dist: 45`. To run a catalog preset with this image, copy the preset. Change those two lines.
 
-- **Single machine, the channel image** — `freeipa-env up ENV.YAML` (or
-  `ensure`) bakes the env's missing channel image for the env's `dist:`;
-  `ensure --build` rebakes a present one, **replacing** whatever build the
-  channel tag held.
+- **One machine, the channel image.** `freeipa-env up ENV.YAML` or `ensure` makes the missing channel image for the `dist:` of the env. `ensure --build` makes a new image. It **replaces** the build that the channel tag points to.
 
-- **Queue** — `freeipa-env queue run QUEUE --runner local` (or `USER@HOST`)
-  bakes the missing channel images on each runner before any job starts.
-  Host runners bake for dist 44; for another release bake the channel first
-  (`images/build.sh --dist N`).
+- **Queue.** `freeipa-env queue run QUEUE --runner local` (or `USER@HOST`) makes the missing channel images on each runner. This happens before any job starts. Host runners make images for dist 44. For another release, make the channel first with `images/build.sh --dist N`.
 
-- **Testing Farm** — `--runner testing-farm --tf-compose Fedora-N`; see
-  **Testing Farm transport** above.
+- **Testing Farm.** Use `--runner testing-farm --tf-compose Fedora-N`. See [Testing Farm transport](#testing-farm-transport).
 
-Builds published in a COPR repository use the same bake: add
-`--copr OWNER/PROJECT` (repeatable) to any of the commands above
-(`--ipa-from-copr` states it explicitly). dnf then resolves the
-IPA packages against the COPR and the distribution together.
+To use builds from a COPR repository, add `--copr OWNER/PROJECT` to any command above. You can repeat it. `--ipa-from-copr` states this choice. dnf then finds the IPA packages in the COPR and in the distribution.
 
 ## Build the IPA RPMs ourselves
 
-By default `freeipa-env` consumes IPA RPMs that some build farm produced and
-baked into a `freeipa-ci/full` image, which you then distribute. A
-delivered RPM's distro dependencies (e.g. samba) can outlive its snapshot: a
-newer samba lands in the repo, the old IPA RPM's `Requires` no longer
-resolves, and the test image build breaks for reasons unrelated to the IPA
-change under test. The self-build lane removes that failure class: the IPA
-binary RPMs are compiled **from the same git snapshot** inside a dedicated
-build image on the same host that bakes the test image, so build and test
-share one distro repo snapshot (design §3.10).
+By default, `freeipa-env` uses IPA RPMs. A build farm makes them. The RPMs go into a `freeipa-ci/full` image, and you distribute that image.
 
-The lane, end to end:
+A problem can happen with these RPMs. Their distro dependencies can change after the snapshot. For example, a newer samba enters the repository. The old IPA RPM requires the old samba, which no longer resolves. The image build then fails. The cause is not the IPA change under test.
 
-1. **Control node** — `scripts/make-srpms.sh` autogens + configures the
-   checkout and runs `make srpms`, producing
-   `dist/srpms/freeipa-<ver>.src.rpm`. This is the only step that needs the
-   IPA source tree; it mirrors `makerpms.sh` (same configure triplet), so
-   the SRPM records the same host/layout a local `make rpms` would.
-2. **Ship** — the SRPM reaches the host that runs the environment: locally
-   (single machine) or rsynced by the supervisor to each runner (queues).
-3. **Build + bake** — `images/build.sh --srpm <path>` compiles the SRPM
-   inside the dedicated `freeipa-ci/build:<dist>` image (the base image plus
-   every `BuildRequires` from the spec, baked once per dist — not `dnf
-   builddep` per build) with `rpmbuild --nocheck --rebuild` (`--nocheck`
-   skips the spec's `%check` unit-test suite, which CI runs in its own
-   `run` lane), collects the fresh binary RPMs, bakes
-   `freeipa-ci/full:<dist>` from them, and tags it with the channel.
+The self-build lane prevents this problem. It compiles the IPA binary RPMs from the **same git snapshot**. It does this in a build image on the same host that makes the test image. The build and the test use one snapshot of the distro repository (design §3.10).
 
-Three entry points, one underlying command:
+### Steps
 
-- **Single machine** — put a `build:` block on the env file; `up` builds any
-  missing channel image before it resolves (and `freeipa-env ensure` does
-  just that half):
+1. **Control node.** `scripts/make-srpms.sh` runs autogen and configure on the checkout. Then it runs `make srpms`. The result is `dist/srpms/freeipa-<ver>.src.rpm`. This is the only step that needs the IPA source tree. The script uses the same configure options as `makerpms.sh`. So the SRPM has the same host and layout as a local `make rpms`.
+2. **Ship.** The SRPM goes to the host that runs the environment. For one machine, it is already there. For a queue, the supervisor copies it to each runner with rsync.
+3. **Build and bake.** `images/build.sh --srpm <path>` compiles the SRPM. It does this in the `freeipa-ci/build:<dist>` image. That image has the base image and every BuildRequires of the spec. It is made once for each dist. The build does not run `dnf builddep` for each build.
+
+   The build runs `rpmbuild --nocheck --rebuild`. `--nocheck` skips the `%check` unit tests of the spec. CI runs those tests in its own `run` step. The build then collects the new binary RPMs. It makes `freeipa-ci/full:<dist>` from them. It tags the image with the channel.
+
+### Three ways to start it
+
+- **One machine.** Add a `build:` block to the env file. `up` builds any missing channel image before it finds the image. `freeipa-env ensure` does only this step.
 
   ```yaml
   name: base-xmlrpc
@@ -809,9 +825,7 @@ Three entry points, one underlying command:
   freeipa-env ensure ENV.YAML --build  # force a rebuild
   ```
 
-- **Queue** — pass the SRPM (a file or the `dist/srpms/` dir) to `queue run`;
-  the supervisor ships it to each runner and builds any channel image the
-  runner is missing, before any job starts:
+- **Queue.** Pass the SRPM to `queue run`. You can pass a file or the `dist/srpms/` directory. The supervisor copies it to each runner. It builds any channel image that the runner does not have. This happens before any job starts.
 
   ```
   freeipa-env queue run queues/gating.yaml \
@@ -820,26 +834,25 @@ Three entry points, one underlying command:
       [--srpm-dir /root/freeipa-ci/srpm] [--image-timeout 9000]
   ```
 
-**Freshness model.** A channel image already present on the host is left
-untouched; only missing channels are built (a full IPA build + image bake
-can take a while). Force a rebuild with `build.force` in the env file,
-`freeipa-env ensure --build`, or by removing the channel image. Without an
-SRPM (`--srpm`, or a `build:` block on the env file) a missing channel image
-is instead baked with dnf from the distribution's packages, or from the
-`--copr` repositories when any is given (see above).
+### When images are rebuilt
+
+A channel image that is already on the host is not changed. Only missing channel images are built. A full IPA build and image bake can take a long time.
+
+To force a rebuild, use one of these:
+
+- Set `build.force` in the env file.
+- Run `freeipa-env ensure --build`.
+- Remove the channel image.
+
+Without an SRPM (`--srpm`, or a `build:` block), a missing channel image is made with dnf. It uses the distribution packages. If you pass `--copr`, it uses the COPR repositories.
 
 ## Blend a preset or queue with a provider setup (`blend`)
 
-`freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a
-ready-to-run preset (or queue) to `env/generated/NAME.yaml` so the run is
-plain `run` / `queue run` with no flags to repeat:
+`freeipa-env blend BASE PROVIDER --name NAME [--tests T ...]` writes a preset or queue that is ready to run. The file is `env/generated/NAME.yaml`. You then run it with `run` or `queue run`. You do not repeat any flags.
 
-- BASE is a preset, or a queue (`jobs:`); for a queue every job is blended
-  and written to `env/generated/NAME/<job>.yaml`.
-- PROVIDER is a setup file (`provider`, `inner`, `vm`, `hosts`, `resources`,
-  `image`, `dist`, `domain`, ...). Its top-level keys replace BASE's; its
-  `name` and `run` are ignored.
-- `--tests` replaces `run.tests` in every generated preset.
+- BASE is a preset or a queue (a file with `jobs:`). For a queue, each job is blended. Each one is written to `env/generated/NAME/<job>.yaml`.
+- PROVIDER is a setup file. It has keys such as `provider`, `inner`, `vm`, `hosts`, `resources`, `image`, `dist`, and `domain`. Its top-level keys replace the keys of BASE. Its `name` and `run` are ignored.
+- `--tests` replaces `run.tests` in each generated preset.
 
 ```
 freeipa-env blend presets/base-xmlrpc.yaml presets/nested-qemu-external.yaml \
@@ -847,41 +860,30 @@ freeipa-env blend presets/base-xmlrpc.yaml presets/nested-qemu-external.yaml \
 freeipa-env run env/generated/xmlrpc-vm.yaml
 ```
 
-Generated files are validated before they are written, so a bad merge fails
-in `blend`, not in the run.
+`blend` checks each generated file before it writes it. A bad merge fails in `blend`, not during the run.
 
 ## Preset validation (`check`)
 
-`freeipa-env check [PRESETS ...]` validates preset files **without**
-spawning containers or touching the network — the CI gate for the 1300+
-presets (migrated PRCI, Azure, nested). With no arguments it checks every
-`*.yaml` under `env/presets/` (plus the top-level presets); pass explicit
-files or directories to narrow the scope. Each preset must parse as an
-`EnvSpec` and pass the provider's read-only sanity checks:
+`freeipa-env check [PRESETS ...]` checks preset files. It does not start containers and it does not use the network. Use it as the CI check for the 1300 or more presets.
 
-* `provider: podman` — every containerized host resolves an image, and a
-  channel-style name is a *known* build channel (`freeipa-current/next/
-  previous`); a bare name that is neither a channel nor an image reference
-  is flagged as a likely typo.
-* `provider: nested` — the `vm:` block builds a known VM backend and
-  `inner` names a known provider; with `inner: external` every host has a `vm:`.
-* `provider: external` — every host carries an address.
+With no arguments, it checks every `*.yaml` under `env/presets/`, and the top-level presets. To check fewer files, pass files or directories.
 
-One line is printed per failing preset, then a summary; the exit code is 0
-iff every preset is sound and no path is missing. Wire it into the PR gate
-so a preset edit can't silently break a queue:
+Each preset must parse as an `EnvSpec`. It must also pass the checks of its provider:
+
+- **`provider: podman`.** Each containerized host must find an image. A channel name must be a known channel: `freeipa-current`, `freeipa-next`, or `freeipa-previous`. A name that is neither a channel nor an image reference is reported as a likely typo.
+- **`provider: nested`.** The `vm:` block must use a known VM backend. `inner` must name a known provider. With `inner: external`, each host must have a `vm:`.
+- **`provider: external`.** Each host must have an address.
+
+`check` prints one line for each failing preset, then a summary. The exit code is 0 only when every preset is valid and no path is missing.
+
+Add the check to your pull request gate. A preset change then cannot break a queue without notice.
 
 ```
-freeipa-env check   # from the repo root; checks all presets, exits non-zero on any problem
+freeipa-env check   # run from the repository root. It checks all presets and exits non-zero on any problem.
 ```
 
 ## Notes
 
-- The podman provider pins one network per env (10.89.0.0/24 +
-  2001:db8:1::/64); one env per host in v1. A preset replaces those with
-  `subnet_v4:` / `subnet_v6:` when the defaults collide with a podman
-  network another project already created on the same host.
-- `run` in base mode copies `scripts/run-base-tests.sh` into the master
-  container and runs it there; the JUnit report is fetched back afterwards.
-- Uninstall is part of the workflow (install → test → uninstall); the
-  container is destroyed only by `down`, after uninstall completes.
+- The podman provider uses one network for each env: `10.89.0.0/24` and `2001:db8:1::/64`. Only one env can run on each host in version 1. If these defaults conflict with a podman network that another project made, set `subnet_v4:` and `subnet_v6:` in the preset.
+- In base mode, `run` copies `scripts/run-base-tests.sh` into the master container and runs it there. The JUnit report is copied back afterward.
+- Uninstall is part of the workflow: install, test, uninstall. The container is removed only by `down`, after the uninstall finishes.
