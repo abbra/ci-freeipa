@@ -19,7 +19,7 @@ from .envspec import EnvSpec, EnvSpecError, RunSpec
 from .queue import QueueSpec
 from .podman_provider import PodmanProvider, PodmanError
 from .external_provider import ExternalProvider, ExternalError
-from .vmbackend import VMBackendError
+from .vmbackend import VMBackendError, live_qemu_vms
 from .nested_provider import NestedProvider, NestedError
 from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          render_list, render_json, show_categories,
@@ -760,6 +760,32 @@ def cmd_list(args):
     return 0
 
 
+def cmd_vms(args):
+    """Running qemu VMs, each with the environment that owns it. A VM no
+    environment's nested-state.json names is an orphan (its `up` was
+    repeated, or its workdir was removed); stop it with `kill <pid>`."""
+    owner = {}
+    for env in sorted(os.listdir(_state_dir())
+                      if os.path.isdir(_state_dir()) else []):
+        try:
+            with open(os.path.join(_state_dir(), env,
+                                   'nested-state.json')) as f:
+                vms = json.load(f)['vms']
+        except (OSError, ValueError, KeyError):
+            continue
+        for v in vms:
+            p = v.get('meta', {}).get('private', {})
+            owner[v['id']] = (env, p.get('name', '-'), p.get('ip', '-'))
+    live = live_qemu_vms(args.qemu_dir)
+    for vm_id, pid in sorted(live.items(),
+                             key=lambda kv: owner.get(kv[0], ('~',))):
+        env, name, ip = owner.get(vm_id, ('(orphan)', '-', '-'))
+        print(f'{vm_id:22s} {pid:>8d} {name:10s} {ip:15s} {env}')
+    if not live:
+        print('no running VMs')
+    return 0
+
+
 def cmd_prune(args):
     """Remove the containers and network of environments with nothing running
     (and, with --workdirs, their workdirs). Dry run unless --yes."""
@@ -1214,6 +1240,13 @@ def main(argv=None):
     sp = sub.add_parser(
         'list', help='environments on this host: containers and workdir')
     sp.set_defaults(fn=cmd_list)
+
+    sp = sub.add_parser(
+        'vms', help='running qemu VMs and the environment each belongs to; '
+                    'one without an environment is an orphan')
+    sp.add_argument('--qemu-dir', default='~/.cache/freeipa-ci/qemu',
+                    help='qemu backend state_dir (default: %(default)s)')
+    sp.set_defaults(fn=cmd_vms)
 
     sp = sub.add_parser(
         'prune', help='remove the containers and network of environments '

@@ -496,6 +496,17 @@ def _qemu_pid(pidfile: str, vm_id: str) -> Optional[int]:
     return pid if vm_id.encode() in cmd else None
 
 
+def live_qemu_vms(state_dir: str = '~/.cache/freeipa-ci/qemu') -> dict:
+    """{vm id: pid} of the running qemu VMs under `state_dir`."""
+    root = os.path.expanduser(state_dir)
+    found = {}
+    for vm_id in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        pid = _qemu_pid(os.path.join(root, vm_id, 'qemu.pid'), vm_id)
+        if pid:
+            found[vm_id] = pid
+    return found
+
+
 def _stop_qemu(pid: int, grace: int = 30):
     os.kill(pid, signal.SIGTERM)
     deadline = time.time() + grace
