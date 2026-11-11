@@ -255,7 +255,7 @@ vm:
 - Plain names also work. For example: `guest_packages: [tmux]`.
 - Subtract with `-name`. For example, `guest_packages: [ipa-distro, -firewalld, -python3-pip]` keeps the `ipa-distro` set but drops those two packages. The `-` entry works in any position. The pip step of a set is not removed.
 - `vm.copr: [OWNER/PROJECT]` enables those COPR repos with `dnf copr enable` on every VM, before the packages are installed. To change the list for one VM, set `copr` in its `vm.vms` entry (the entry named after the host); that list replaces the top-level one for that VM only.
-- `vm.selinux: permissive` (or `enforcing`) sets the SELinux mode on every VM, now and after a reboot. `permissive` also turns on `dontaudit` logging, so `/var/log/audit/audit.log` records every denial a confined service would hit. Use it to collect AVCs from a run.
+- `vm.selinux: permissive` (or `enforcing`) sets the SELinux mode on every VM, now and after a reboot. `permissive` also turns on `dontaudit` logging, so `/var/log/audit/audit.log` records every denial a confined service would hit. Use it to collect AVCs from a run. Set `selinux` in a `vm.vms` entry to change one VM only.
 - If a package name is wrong, `up` fails and prints the `dnf` output.
 - Only Fedora 45 is tested. The EL clones are not tested.
 - There are no guest desktop packages in any set yet.

@@ -295,13 +295,15 @@ class NestedProvider:
         if self._cfg('bootc'):
             for h in ext.spec.hosts:
                 ext._ssh(h, 'bootc usroverlay', timeout=600)
-        mode = self._cfg('selinux')
-        if mode not in (None, 'permissive', 'enforcing'):
-            raise NestedError(
-                f'vm.selinux is {mode!r}; use permissive or enforcing')
-        if mode:
-            # persisted for reboots; -DB also logs dontaudit denials
-            for h in ext.spec.hosts:
+        # a vm.vms entry named after a host overrides copr and selinux
+        over = {v.get('name'): v for v in self._cfg('vms') or []}
+        for h in ext.spec.hosts:
+            mode = over.get(h.name, {}).get('selinux', self._cfg('selinux'))
+            if mode not in (None, 'permissive', 'enforcing'):
+                raise NestedError(f'selinux for {h.name} is {mode!r}; '
+                                  f'use permissive or enforcing')
+            if mode:
+                # persisted for reboots; -DB also logs dontaudit denials
                 perm = mode == 'permissive'
                 ext._ssh(h, f"sed -i 's/^SELINUX=.*/SELINUX={mode}/' "
                             f"/etc/selinux/config && "
@@ -310,8 +312,6 @@ class NestedProvider:
                          timeout=300)
         pkgs = self._cfg('guest_packages') or []
         copr = self._cfg('copr') or []
-        # a vm.vms entry named after a host may set its own copr list
-        over = {v.get('name'): v for v in self._cfg('vms') or []}
         per = {h.name: over.get(h.name, {}).get('copr', copr)
                for h in ext.spec.hosts}
         for h in ext.spec.hosts:
