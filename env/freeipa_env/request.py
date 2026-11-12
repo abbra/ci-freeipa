@@ -221,6 +221,60 @@ def testing_farm(req, todo, workdir, src, repo_url, ref, dry_run):
     return subprocess.run(argv).returncode
 
 
+# GitHub refuses a job summary over 1 MiB
+SUMMARY_CAP = 900_000
+
+
+def _report(preset, workdir):
+    """The markdown report of a finished preset, or None when there is none.
+    The HTML one goes next to it, for the artifact (a run page shows only
+    markdown)."""
+    md = os.path.join(workdir, 'results.md')
+    env = os.path.join(queue.ENVROOT, 'freeipa-env')
+    subprocess.run([env, 'report', preset, '--workdir', workdir],
+                   stdout=subprocess.DEVNULL)
+    rc = subprocess.run([env, 'report', preset, '--workdir', workdir,
+                         '--format', 'md', '-o', md],
+                        stdout=subprocess.DEVNULL).returncode
+    if rc or not os.path.isfile(md):
+        return None
+    with open(md) as f:
+        return f.read()
+
+
+def _clip(text, limit):
+    """`text` cut at a line end under `limit` bytes, a code fence it left
+    open closed, and a note"""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit('\n', 1)[0]
+    if sum(1 for line in cut.splitlines() if line.startswith('```')) % 2:
+        cut += '\n```'
+    return (cut + '\n\n*(report cut: the run page takes 1 MiB; the whole '
+            'one is in the artifact)*\n')
+
+
+def compose_summary(results, reports, cap=SUMMARY_CAP):
+    """The markdown for the run page: the table, then each preset's report in
+    a section that is open when the preset failed"""
+    out = ['## ci-freeipa request\n', '| preset | result |', '|---|---|']
+    out += [f'| `{k}` | {"passed" if rc == 0 else f"failed ({rc})"} |'
+            for k, rc in results]
+    head = '\n'.join(out) + '\n'
+    room = max(cap - len(head), 0) // max(len(results), 1) - 300
+    parts = [head]
+    for key, rc in results:
+        report = reports.get(key)
+        state = 'passed' if rc == 0 else f'failed ({rc})'
+        body = (_clip(report, room) if report
+                else '*no report: the environment did not get far enough to '
+                     'collect one*')
+        parts.append(f'\n<details{"" if rc == 0 else " open"}>'
+                     f'<summary><b>{key}</b>: {state}</summary>\n\n'
+                     f'{body}\n\n</details>\n')
+    return ''.join(parts)
+
+
 def run(request_file, src, workdir, image=IMAGE, dry_run=False,
         runner='local', tf_repo_url=None, tf_ref=None):
     """Run the request; the exit status is 0 when every preset passed"""
@@ -244,7 +298,7 @@ def run(request_file, src, workdir, image=IMAGE, dry_run=False,
     if srpm_dir and nested:
         rpms_dir = build_rpms(srpm_dir, os.path.join(workdir, 'ipa-rpms'),
                               vm_dist(nested))
-    results = []
+    results, reports = [], {}
     for key, path, tests in todo:
         gen = os.path.join(workdir, f'{key}.preset.yaml')
         with open(path) as f:
@@ -259,15 +313,16 @@ def run(request_file, src, workdir, image=IMAGE, dry_run=False,
         _step('summary', gen, wd)
         _step('down', gen, wd)
         results.append((key, rc))
+        reports[key] = _report(gen, wd)
+        if os.environ.get('GITHUB_ACTIONS') and rc:
+            print(f'::error title=ci-freeipa {key}::failed (exit {rc})')
     print('\n== request finished')
-    lines = ['| preset | result |', '|---|---|'] + [
-        f'| `{k}` | {"passed" if rc == 0 else f"failed ({rc})"} |'
-        for k, rc in results]
-    print('\n'.join(lines))
+    text = compose_summary(results, reports)
+    print(text)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         with open(summary, 'a') as f:
-            f.write('\n'.join(lines) + '\n')
+            f.write(text)
     return 0 if all(rc == 0 for _k, rc in results) else 1
 
 

@@ -198,3 +198,30 @@ def test_an_image_name_without_a_release_gives_none(tmp_path):
     p = write(tmp_path, 'a.yaml', yaml.safe_dump(
         {'vm': {'image': '~/images/some.qcow2'}}))
     assert request.vm_dist([p]) is None
+
+
+def test_the_summary_has_a_table_and_a_section_per_preset():
+    text = request.compose_summary(
+        [('a', 0), ('b', 1)], {'a': '# A report\n', 'b': None})
+    assert '| `a` | passed |' in text and '| `b` | failed (1) |' in text
+    # a failed preset is open on the run page, a passed one is folded
+    assert '<details><summary><b>a</b>: passed' in text
+    assert '<details open><summary><b>b</b>: failed (1)' in text
+    assert '# A report' in text
+    assert 'no report' in text
+
+
+def test_a_report_over_the_limit_is_cut_at_a_line_and_its_fence_closed():
+    report = '```\n' + 'x' * 50 + '\n' + 'y' * 50 + '\n```\n'
+    cut = request._clip(report, 70)
+    assert cut.startswith('```\nxxxx')
+    assert 'y' * 10 not in cut
+    assert cut.count('```') == 2 and 'report cut' in cut
+
+
+def test_the_summary_stays_under_the_cap_with_several_big_reports():
+    reports = {k: 'line\n' * 100_000 for k in 'abc'}
+    text = request.compose_summary(
+        [(k, 1) for k in 'abc'], reports, cap=50_000)
+    assert len(text) < 50_000
+    assert text.count('report cut') == 3
