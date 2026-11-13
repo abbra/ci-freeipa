@@ -28,6 +28,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
 from .htmlreport import render_html
 from . import installtiming
 from .mdreport import render_markdown
+from . import container as container_mode
 from .detached import LocalDetached
 from . import summary as xsummary
 
@@ -118,8 +119,28 @@ def cmd_report(args):
     return 0
 
 
+def _podman_container_guard():
+    """Refuse the podman provider when the control node is a container.
+
+    Running podman here would talk to (or try to create) a store of the
+    outer environment and can break it. The nested qemu backend is the
+    supported path in that case. A podman *socket* forwarded from a host
+    would be safe: FREEIPA_CI_ALLOW_PODMAN=1 opts back in.
+    """
+    if not container_mode.in_container():
+        return
+    if os.environ.get('FREEIPA_CI_ALLOW_PODMAN'):
+        return
+    raise PodmanError(
+        'the control node is a container: refusing to run podman (it '
+        'would use the outer environment\'s container store). Use the '
+        'nested qemu backend (see presets/nested-qemu*.yaml), or set '
+        'FREEIPA_CI_ALLOW_PODMAN=1 if a podman socket is forwarded in.')
+
+
 def make_provider(spec, workdir, args):
     if spec.provider == 'podman':
+        _podman_container_guard()
         return PodmanProvider(spec, workdir, tool=args.tool,
                               seccomp=args.seccomp,
                               copr=getattr(args, 'copr', None) or None,
@@ -1258,6 +1279,10 @@ def _tf_config(args):
 
 
 def main(argv=None):
+    fetched = container_mode.prepare_tools()
+    if fetched:
+        print(f'== container mode: fetched {", ".join(fetched)} '
+              f'(wrappers in {container_mode.tool_bin_dir()})')
     p = argparse.ArgumentParser(
         prog='freeipa-env',
         description='Provision and drive FreeIPA CI environments '
