@@ -17,7 +17,7 @@ hosts reach each other over the backend's private network (``ip``).  In
 this mode ``up``/``run``/``down`` run from the control node and nothing is
 shipped to the VMs.
 
-The qemu VM memory is each host's ``resources`` memory; a ``memory`` in the vm block is an error here.
+The qemu/krun VM memory is each host's ``resources`` memory; a ``memory`` in the vm block is an error here.
 
 The nested provider runs on the *control node* (a CI machine that has the
 cloud API creds + ssh).  ``up`` provisions its own VM(s) and persists the
@@ -56,11 +56,11 @@ class NestedProvider:
         return (self.spec.vm or {}).get(key, default)
 
     def _vm_cfg(self):
-        """Backend config.  Inner external sizes each qemu VM from the memory
+        """Backend config.  Inner external sizes each qemu/krun VM from the memory
         of its host's `resources` (the test requirement), so a `memory` in the
         vm block would contradict it and is rejected."""
         cfg = dict(self.spec.vm or {})
-        if self.inner_type != 'external' or cfg.get('backend') != 'qemu':
+        if self.inner_type != 'external' or cfg.get('backend') not in ('qemu', 'krun'):
             return cfg
         over = {v.get('name'): dict(v) for v in cfg.get('vms') or []}
         if 'memory' in cfg or any('memory' in v for v in over.values()):
