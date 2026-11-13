@@ -419,6 +419,10 @@ VM and the whole validated podman flow runs there.
   the control node, no cloud API. qcow2 overlay + NoCloud seed, user-mode NAT
   with a forwarded ssh port; ssh/rsync share `_ssh_command`, and ephemeral VMs
   skip known_hosts. Preset `presets/nested-qemu.yaml`.
+- [x] J8: `krun` backend (`vmbackend.py` `KrunBackend`, `krunproc.py`): the qemu
+  backend's contract on libkrun microVMs (passt for ssh, a datagram hub for the
+  private NIC, vfat seed). Preset `presets/krun-smoke.yaml`. Inner `podman`,
+  Testing Farm and Ubuntu are not covered.
 
 ## K. Preset validation (`freeipa-env check`)
 
