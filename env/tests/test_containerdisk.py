@@ -6,13 +6,19 @@ import uuid
 
 import pytest
 
+from freeipa_env import container as container_mode
 from freeipa_env import containerdisk as cd
 
 ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 PUBLISH = os.path.join(ROOT, 'images', 'vm', 'publish.sh')
 needs_podman = pytest.mark.skipif(
-    not (shutil.which('podman') and shutil.which('qemu-img')),
-    reason='podman and qemu-img needed')
+    not (shutil.which('podman') and shutil.which('qemu-img')
+         and not (container_mode.in_container()
+                  and subprocess.run(
+                      ['podman', 'info'], capture_output=True
+                  ).returncode != 0)),
+    reason='a working podman and qemu-img needed (a control node that is '
+           'a container has no podman; see freeipa_env.container)')
 
 
 def sha(path):
