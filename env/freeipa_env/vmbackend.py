@@ -618,6 +618,14 @@ class QemuBackend(VMBackend):
     ``console.log`` is kept for triage.
     """
     name = 'qemu'
+    _VM_FILES = ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid')
+
+    def _state_dir(self):
+        return os.path.expanduser(
+            self.cfg.get('state_dir', '~/.cache/freeipa-ci/qemu'))
+
+    def _tools(self):
+        return [self._qemu(), 'qemu-img']
 
     def _qemu(self):
         return self.cfg.get('qemu', 'qemu-system-x86_64')
@@ -629,7 +637,7 @@ class QemuBackend(VMBackend):
         if over is None:
             return [dict(base) for _ in range(count)]
         if len(over) != count:
-            raise VMBackendError(f'qemu backend: vm.vms lists {len(over)} VM(s) '
+            raise VMBackendError(f'{self.name} backend: vm.vms lists {len(over)} VM(s) '
                                  f'but {count} requested; set vm.count to match')
         return [{**base, **(o or {})} for o in over]
 
@@ -639,17 +647,18 @@ class QemuBackend(VMBackend):
         for c in cfgs:
             image = c.get('image')
             if not image:
-                raise VMBackendError('qemu backend: `vm.image` (cloud base image) '
-                                     'is required, per VM or top-level')
+                raise VMBackendError(f'{self.name} backend: `vm.image` (cloud base '
+                                     'image) is required, per VM or top-level')
             if not os.path.isfile(os.path.expanduser(image)):
-                raise VMBackendError(f'qemu backend: base image not found: {image}')
+                raise VMBackendError(
+                    f'{self.name} backend: base image not found: {image}')
             _check_disk(os.path.expanduser(image), c.get('disk', '40G'))
         if not os.access('/dev/kvm', os.W_OK):
-            raise VMBackendError('qemu backend: /dev/kvm is not writable '
+            raise VMBackendError(f'{self.name} backend: /dev/kvm is not writable '
                                  '(needs KVM and access to /dev/kvm)')
-        for tool in (self._qemu(), 'qemu-img'):
+        for tool in self._tools():
             if not shutil.which(tool):
-                raise VMBackendError(f'qemu backend: {tool} not found')
+                raise VMBackendError(f'{self.name} backend: {tool} not found')
 
     def _pubkeys(self):
         """(authorized public key texts, private key for ssh or None)."""
@@ -662,7 +671,7 @@ class QemuBackend(VMBackend):
                     for n in ('id_ed25519', 'id_ecdsa', 'id_rsa')]
         pubs = [p for p in pubs if os.path.isfile(p)]
         if not pubs:
-            raise VMBackendError('qemu backend: no ssh public key to authorize '
+            raise VMBackendError(f'{self.name} backend: no ssh public key to authorize '
                                  '(set vm.ssh_key)')
         key = key or pubs[0][:-len('.pub')]     # private half of the first authorized key
         keys = []
@@ -676,10 +685,10 @@ class QemuBackend(VMBackend):
             proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, timeout=600)
         except FileNotFoundError:
-            raise VMBackendError(f'qemu backend: {cmd[0]} not found')
+            raise VMBackendError(f'{self.name} backend: {cmd[0]} not found')
         out = proc.stdout.decode(errors='replace')
         if proc.returncode:
-            raise VMBackendError(f'qemu backend: {shlex.join(cmd)} failed '
+            raise VMBackendError(f'{self.name} backend: {shlex.join(cmd)} failed '
                                  f'({proc.returncode}):\n{out[-2000:]}')
 
     def _seed(self, vmdir, vm_id, keys, net):
@@ -688,12 +697,24 @@ class QemuBackend(VMBackend):
         if not tool:
             raise VMBackendError('qemu backend: need genisoimage, mkisofs or '
                                  'xorriso to build the cloud-init seed')
+        self._seed_files(vmdir, vm_id, keys, net)
+        args = ['-output', 'seed.iso', '-volid', 'cidata', '-joliet', '-rock',
+                'user-data', 'meta-data', 'network-config']
+        if tool == 'xorriso':
+            args = ['-as', 'mkisofs'] + args
+        self._run([tool] + args, cwd=vmdir)
+
+    def _seed_files(self, vmdir, vm_id, keys, net, files=(), runcmd=()):
+        """cloud-init user-data, meta-data and network-config in `vmdir`."""
         user = {'disable_root': False,
                 'users': ['default',
                           {'name': 'root', 'ssh_authorized_keys': keys}],
                 'write_files': [{'path': '/etc/hosts', 'append': True,
                                  'content': ''.join(f"{h['ip']} {h['name']}\n"
-                                                    for h in net['hosts'])}]}
+                                                    for h in net['hosts'])},
+                                *files]}
+        if runcmd:
+            user['runcmd'] = list(runcmd)
         netcfg = {'version': 2, 'ethernets': {
             'ssh': {'match': {'macaddress': net['mac_ssh']}, 'dhcp4': True},
             'priv': {'match': {'macaddress': net['mac_priv']},
@@ -704,11 +725,6 @@ class QemuBackend(VMBackend):
             f.write(f"instance-id: {vm_id}\nlocal-hostname: {net['name']}\n")
         with open(os.path.join(vmdir, 'network-config'), 'w') as f:
             f.write(yaml.safe_dump(netcfg))
-        args = ['-output', 'seed.iso', '-volid', 'cidata', '-joliet', '-rock',
-                'user-data', 'meta-data', 'network-config']
-        if tool == 'xorriso':
-            args = ['-as', 'mkisofs'] + args
-        self._run([tool] + args, cwd=vmdir)
 
     def _display_args(self, c, q):
         """No display, or virtio-gpu with host OpenGL (virgl) rendered on
@@ -732,8 +748,7 @@ class QemuBackend(VMBackend):
 
     def _start(self, keys, key, net, seg, c):
         vm_id = f'freeipa-ci-{uuid.uuid4().hex[:10]}'
-        vmdir = os.path.join(os.path.expanduser(
-            self.cfg.get('state_dir', '~/.cache/freeipa-ci/qemu')), vm_id)
+        vmdir = os.path.join(self._state_dir(), vm_id)
         os.makedirs(vmdir)
         q = {'dir': vmdir, 'pidfile': os.path.join(vmdir, 'qemu.pid'),
              'console': os.path.join(vmdir, 'console.log')}
@@ -749,9 +764,7 @@ class QemuBackend(VMBackend):
             priv_netdev = c['priv_netdev']
         try:
             self._seed(vmdir, vm_id, keys, net)
-            self._run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'qcow2',
-                       '-b', os.path.expanduser(c['image']), disk,
-                       str(c.get('disk', '40G'))])
+            self._overlay(c, disk)
             self._run([self._qemu(), '-name', vm_id,
                        '-machine', 'q35,accel=kvm', '-cpu', 'host',
                        '-smp', str(c.get('cpus', 4)),
@@ -776,7 +789,13 @@ class QemuBackend(VMBackend):
                         meta={'ephemeral_hostkey': True, 'qemu': q,
                               'private': net})
 
-    def provision(self, count=1):
+    def _overlay(self, c, disk):
+        self._run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'qcow2',
+                   '-b', os.path.expanduser(c['image']), disk,
+                   str(c.get('disk', '40G'))])
+
+    def _cfgs_with_images(self, count):
+        """Per-VM configs with container-disk image references resolved."""
         cfgs = self._vm_cfgs(count)
         pulled = {}
         for c in cfgs:
@@ -785,8 +804,23 @@ class QemuBackend(VMBackend):
                     if c['image'] not in pulled:
                         pulled[c['image']] = containerdisk.resolve(c['image'])
                 except containerdisk.ContainerDiskError as e:
-                    raise VMBackendError(f'qemu backend: {e}')
+                    raise VMBackendError(f'{self.name} backend: {e}')
                 c['image'] = pulled[c['image']]
+        return cfgs
+
+    def _nets(self, cfgs):
+        names = [c.get('name', f'vm{i + 1}') for i, c in enumerate(cfgs)]
+        if len(set(names)) != len(names):
+            raise VMBackendError(f'{self.name} backend: duplicate VM names: {names}')
+        nets = [{'name': n, 'ip': f'{PRIVATE_PREFIX}.{10 + i}',
+                 'mac_ssh': _mac(), 'mac_priv': _mac()}
+                for i, n in enumerate(names)]
+        for n in nets:
+            n['hosts'] = [{'name': m['name'], 'ip': m['ip']} for m in nets]
+        return nets
+
+    def provision(self, count=1):
+        cfgs = self._cfgs_with_images(count)
         self._check_host(cfgs)
         _usb_assign(cfgs)
         keys, key = self._pubkeys()
@@ -807,14 +841,7 @@ class QemuBackend(VMBackend):
             for i in range(1, len(cfgs)):
                 cfgs[i]['priv_netdev'] = \
                     f'socket,id=priv,connect=127.0.0.1:{ports[i - 1]}'
-        names = [c.get('name', f'vm{i + 1}') for i, c in enumerate(cfgs)]
-        if len(set(names)) != len(names):
-            raise VMBackendError(f'qemu backend: duplicate VM names: {names}')
-        nets = [{'name': n, 'ip': f'{PRIVATE_PREFIX}.{10 + i}',
-                 'mac_ssh': _mac(), 'mac_priv': _mac()}
-                for i, n in enumerate(names)]
-        for n in nets:
-            n['hosts'] = [{'name': m['name'], 'ip': m['ip']} for m in nets]
+        nets = self._nets(cfgs)
         handles = []
         try:
             for net, c in zip(nets, cfgs):
@@ -831,18 +858,18 @@ class QemuBackend(VMBackend):
     def terminate(self, handle):
         q = handle.meta.get('qemu')
         if not q:
-            raise VMBackendError(f'qemu backend: no qemu state for {handle.target}')
+            raise VMBackendError(
+                f'{self.name} backend: no {self.name} state for {handle.target}')
         pid = _qemu_pid(q['pidfile'], handle.id)
         if pid:
             stop_qemu(pid)
-        for f in ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid'):
+        for f in self._VM_FILES:
             try:
                 os.remove(os.path.join(q['dir'], f))
             except FileNotFoundError:
                 pass
-        print(f'== vm {handle.target}: qemu {handle.id} stopped '
+        print(f'== vm {handle.target}: {self.name} {handle.id} stopped '
               f'(console: {q["console"]})')
-
 
 
 BACKENDS = {
