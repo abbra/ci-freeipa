@@ -104,7 +104,7 @@ freeipa-env summary ENV.YAML|QUEUE.YAML Show the result of each test in the last
 freeipa-env overlay ENV.YAML SRC:/DST Copy files into every container. Each copy is checked with a hash.
 freeipa-env reset ENV.YAML            Create fresh containers from the same spec. Keep the old logs.
 freeipa-env list                      List the environments on this host.
-freeipa-env vms [PATTERN] [--stop [--yes]] List running qemu VMs and who owns each; stop them.
+freeipa-env vms [PATTERN] [--stop [--yes]] List running qemu and krun VMs and who owns each; stop them.
 freeipa-env prune [--yes] [--workdirs] Remove the environments that have nothing running.
 freeipa-env report [ENV.YAML] [--format md]  Make a self-contained results.html (or a Markdown results.md) from the artifacts.
 freeipa-env resolve ENV.YAML          Podman provider: find the image references in the local image store. Read only.
@@ -147,7 +147,7 @@ Several classes in one `run` share the containers. If an uninstall leaves state 
 
 `list` shows every environment on the host. It reads the podman networks, so it also shows orphans whose workdir is gone. `prune` removes the stopped environments. It is a dry run unless you add `--yes`.
 
-`vms` lists the running qemu VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when a workdir is removed or its state file is lost. Give one or more glob patterns to pick VMs by environment name, workdir path or VM id, or `orphan` for the unowned ones. `--stop` stops the VMs listed (all of them when you give no pattern). It is a dry run unless you add `--yes`. For example, `vms 'ci-*' --stop --yes`. It stops the qemu process only: disks stay, and `down` still collects logs and removes them for a VM an environment owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
+`vms` lists the running qemu and krun VMs, one line each: id, qemu pid, host name, IP and the environment that owns it. A VM that no environment's `nested-state.json` names is shown as `(orphan)`; this happens when a workdir is removed or its state file is lost. Give one or more glob patterns to pick VMs by environment name, workdir path or VM id, or `orphan` for the unowned ones. `--stop` stops the VMs listed (all of them when you give no pattern). It is a dry run unless you add `--yes`. For example, `vms 'ci-*' --stop --yes`. It stops the qemu process only: disks stay, and `down` still collects logs and removes them for a VM an environment owns. It reads the default qemu `state_dir`; use `--qemu-dir` for another.
 
 `up` on a nested environment that already has VMs recorded in its `nested-state.json` is refused: a second `up` would overwrite that file and leave the first VMs running with nobody to stop them. Run `down` first.
 
@@ -218,7 +218,7 @@ provider: nested
 image: freeipa-current
 inner: podman              # inner provider. The default is podman.
 vm:
-  backend: command         # ssh | command | openstack | qemu
+  backend: command         # ssh | command | openstack | qemu | krun
   count: 1                 # number of VMs. The podman inner provider uses the first one.
   provision_cmd: examples/nested/get-vm.sh      # $1 is the count. Print user@host[:port], one per line.
   deprovision_cmd: examples/nested/drop-vm.sh   # $1 is the VM id or target.
@@ -236,6 +236,7 @@ The backends are in `freeipa_env/vmbackend.py`.
 - **`command`**: runs your scripts. `vm.provision_cmd <count>` prints the VM handles. Print one `user@host[:port]` per line, or a JSON list. `vm.deprovision_cmd <handle>` removes a VM. This is the general integration point for a cloud API. Wrap any cloud in two scripts. See `examples/nested/`.
 - **`openstack`**: an example that uses the `openstack` CLI. It runs `server create`, `show`, and `delete`, and it uses floating IPs. Use it as a template for other clouds.
 - **`qemu`**: local VMs under qemu and KVM on the control node. There is no cloud API.
+- **`krun`**: the same local VMs, as libkrun microVMs instead of qemu. See [The krun backend](#the-krun-backend).
 
 #### The qemu backend
 
@@ -246,6 +247,22 @@ The backends are in `freeipa_env/vmbackend.py`.
 - `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`. With `inner: external`, `memory` comes from each host's `resources` entry instead, and a `memory` key in the vm block is an error.
 - `terminate` stops the qemu process and removes the overlay. The `console.log` file stays in `vm.state_dir`.
 - You need `/dev/kvm` and the host packages below.
+
+#### The krun backend
+
+`vm.backend: krun` is a drop-in for `qemu`: the same cloud images, ssh over a forwarded localhost port, private NIC on `192.168.100.0/24`, and `freeipa-env vms` lists and stops the VMs. It is Fedora-only for now, and `inner: external` is the only inner provider I tested. The example is `env/presets/krun-smoke.yaml`.
+
+- Each VM is a `krunproc.py vmm` process that drives libkrun through `ctypes`. The ssh NIC is served by `passt`. The private NIC is a datagram hub (`krunproc.py hub`), one per `up`, that exits after the last VM stops.
+- The config is the qemu backend's, except that `gpu`, `render_node`, `usb` and `qemu` are errors. Three keys are new, with the Fedora Cloud layout as the default: `vm.root_device` (`/dev/vda3`), `vm.root_fstype` (`btrfs`) and `vm.root_options` (`subvol=root`). Other image layouts must set them; there is no auto-detection.
+- The guest runs the kernel built into libkrunfw (6.12). It has no loadable modules, no iso9660, NFS or autofs, no iptables-legacy (nftables works), and no nested KVM. Tests that need NFS or automount fail on this backend.
+- `vm.cpus` is at most 16. The cloud-init seed is a vfat image, because the kernel cannot read an ISO.
+- A guest reboot ends the VM; there is no restart.
+- The private NIC has no virtio checksum or TSO offload. The hub passes frames on unchanged and nothing completes a partial checksum, so with offloads on, the receiving guest dropped TCP segments (ping still worked). I checked a 50 MB transfer between two VMs, with no checksum errors.
+- libkrun 1.19.7 guests die at boot, with no output, when the RAM size is between about 3285 and 3328 MiB. The backend raises such a size to 3336 MiB. I found the edges by trying sizes, so they may be off by a few MiB.
+- `vm.state_dir` must be short: the VM directory path is at most 83 bytes, because unix socket paths are limited to 107 bytes. `up` refuses a longer one.
+- `terminate` stops the VM and removes the overlay. `console.log`, `vmm.log`, `passt.log` and `hub.log` stay in the VM directory.
+- Testing Farm has no krun plan: `tmt/plans/qemu.fmf` is qemu only.
+- The packages (Fedora): `sudo dnf install libkrun passt qemu-img dosfstools mtools`. You also need `/dev/kvm`.
 
 #### Disk images from a registry (`containerdisk:`)
 
