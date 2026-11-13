@@ -1,0 +1,21 @@
+# Same as qemu-smoke on libkrun microVMs. Needs /dev/kvm, libkrun, passt, qemu-img,
+# dosfstools, mtools and podman (for the containerdisk pull):
+# `freeipa-env up|run|down env/presets/krun-smoke.yaml`.
+name: krun-smoke
+domain: ipa.test
+provider: nested
+inner: external
+hosts:
+  - {role: master, name: master1}
+resources:
+  master: {memory: 3300m, memory-swap: 6600m}
+run:
+  mode: integration
+  tests:
+    - test_integration/test_installation.py::TestInstallMaster::test_install_master
+vm:
+  backend: krun
+  image: containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest
+  cpus: 4
+  disk: 40G
+  guest_packages: [ipa-distro]

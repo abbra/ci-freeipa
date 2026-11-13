@@ -15,12 +15,14 @@ Backends:
                     template for any other cloud.
   * ``qemu``     -- local VMs under qemu/KVM on the control node (qcow2
                     overlay + cloud-init seed; ssh over a forwarded port).
+  * ``krun``     -- the same on libkrun microVMs (see KrunBackend).
 
 VMHandle is the currency between a backend and the nested provider: an ssh
 target (user@host[:port]) with an optional private key and free-form meta
 (the backend's own VM id, used for terminate).
 """
 
+import ctypes
 import glob
 import json
 import os
@@ -30,6 +32,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -872,11 +875,172 @@ class QemuBackend(VMBackend):
               f'(console: {q["console"]})')
 
 
+KRUNPROC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'krunproc.py')
+
+
+class KrunBackend(QemuBackend):
+    """Local microVMs under libkrun (KVM) on the control node: no cloud API.
+
+    Same contract as the qemu backend (qcow2 overlay on a cloud image, cloud-init,
+    ssh on a forwarded 127.0.0.1 port, private NIC 192.168.100.0/24) but no qemu:
+    each VM is a ``krunproc.py vmm`` process (libkrun via ctypes), the ssh NIC is
+    served by passt, the private NIC by a ``krunproc.py hub`` process per ``up``.
+    Config is the qemu backend's except ``gpu``, ``render_node``, ``usb``,
+    ``qemu`` (errors), plus::
+
+        root_device: /dev/vda3        # root partition of the image (Fedora Cloud)
+        root_fstype: btrfs
+        root_options: subvol=root
+
+    The guest runs libkrunfw's kernel (no modules, no iso9660, NFS or autofs, no
+    iptables-legacy, <= 16 vCPUs); a guest reboot ends the VM. Needs libkrun,
+    passt, qemu-img, mkfs.vfat and mcopy (dosfstools, mtools) and /dev/kvm.
+    """
+    name = 'krun'
+    _VM_FILES = QemuBackend._VM_FILES + ('seed.img', 'network-config', 'vm.json')
+    _UNSUPPORTED = ('gpu', 'render_node', 'usb', 'qemu')
+    _MAX_VCPUS = 16
+    _MAX_DIR = 83   # unix socket paths are 107 bytes; longest: <vmdir>/krun-net-<7 digit pid>-0.sock
+
+    def _tools(self):
+        return ['qemu-img', 'passt', 'mkfs.vfat', 'mcopy']
+
+    def _check_krun(self, cfgs):
+        for c in cfgs:
+            for k in self._UNSUPPORTED:
+                if c.get(k):
+                    raise VMBackendError(f'krun backend: `vm.{k}` is not supported')
+            if not 1 <= int(c.get('cpus', 4)) <= self._MAX_VCPUS:
+                raise VMBackendError('krun backend: cpus must be 1..16 (libkrun limit)')
+        if len(os.path.join(self._state_dir(), 'freeipa-ci-0123456789')) > self._MAX_DIR:
+            raise VMBackendError(
+                'krun backend: vm.state_dir is too long for unix socket paths (the '
+                f'VM directory path must be at most {self._MAX_DIR} bytes); set a '
+                'shorter vm.state_dir')
+
+    def _check_host(self, cfgs):
+        super()._check_host(cfgs)
+        try:
+            ctypes.CDLL('libkrun.so.1')
+        except OSError:
+            raise VMBackendError('krun backend: libkrun.so.1 not found '
+                                 '(Fedora: dnf install libkrun)')
+        self._check_krun(cfgs)
+
+    def _seed(self, vmdir, vm_id, keys, net):
+        # libkrunfw's kernel has no iso9660 and cloud-init only reads vfat/iso9660;
+        # the sysctl override + restart fixes the one unit that otherwise fails at boot
+        self._seed_files(
+            vmdir, vm_id, keys, net,
+            files=[{'path': '/etc/sysctl.d/50-pid-max.conf',
+                    'content': '# libkrunfw kernel cannot raise kernel.pid_max\n'}],
+            runcmd=[['systemctl', 'restart', 'systemd-sysctl.service']])
+        img = os.path.join(vmdir, 'seed.img')
+        with open(img, 'wb') as f:
+            f.truncate(4 << 20)
+        self._run(['mkfs.vfat', '-n', 'CIDATA', img])
+        self._run(['mcopy', '-i', img, 'user-data', 'meta-data', 'network-config',
+                   '::'], cwd=vmdir)
+
+    def _start_vm(self, vm_id, keys, key, net, c, hub):
+        vmdir = os.path.join(self._state_dir(), vm_id)
+        os.makedirs(vmdir, exist_ok=True)   # the first VM's dir also holds the hub
+        q = {'dir': vmdir, 'pidfile': os.path.join(vmdir, 'qemu.pid'),
+             'console': os.path.join(vmdir, 'console.log')}
+        disk = os.path.join(vmdir, 'disk.qcow2')
+        spec = os.path.join(vmdir, 'vm.json')
+        memory = int(c.get('memory', 8192))
+        if 3285 <= memory <= 3328:
+            # shortcut: libkrun 1.19.7 guests die at boot (no output) when RAM
+            # ends in the last ~40 MiB below the 3.25 GiB MMIO gap; step past it
+            memory = 3336
+        port = _free_port()
+        try:
+            self._seed(vmdir, vm_id, keys, net)
+            self._overlay(c, disk)
+            with open(spec, 'w') as f:
+                json.dump({
+                    'name': net['name'], 'cpus': int(c.get('cpus', 4)),
+                    'memory': memory, 'disk': disk,
+                    'seed': os.path.join(vmdir, 'seed.img'), 'ssh_port': port,
+                    'mac_ssh': net['mac_ssh'], 'mac_priv': net['mac_priv'],
+                    'hub': hub, 'console': q['console'],
+                    'passt_log': os.path.join(vmdir, 'passt.log'),
+                    'root_device': c.get('root_device', '/dev/vda3'),
+                    'root_fstype': c.get('root_fstype', 'btrfs'),
+                    'root_options': c.get('root_options', 'subvol=root')}, f)
+            with open(os.path.join(vmdir, 'vmm.log'), 'w') as log:
+                proc = subprocess.Popen(
+                    [sys.executable, KRUNPROC, 'vmm', spec], start_new_session=True,
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                    env={**os.environ, 'TMPDIR': vmdir})
+            with open(q['pidfile'], 'w') as f:
+                f.write(str(proc.pid))
+        except Exception:
+            shutil.rmtree(vmdir, ignore_errors=True)
+            raise
+        return VMHandle(host='127.0.0.1', port=port, id=vm_id, key=key,
+                        meta={'ephemeral_hostkey': True, 'qemu': q, 'private': net})
+
+    def provision(self, count=1):
+        cfgs = self._cfgs_with_images(count)
+        self._check_host(cfgs)
+        keys, key = self._pubkeys()
+        nets = self._nets(cfgs)
+        ids = [f'freeipa-ci-{uuid.uuid4().hex[:10]}' for _ in cfgs]
+        dirs = [os.path.join(self._state_dir(), i) for i in ids]
+        for d in dirs:
+            os.makedirs(d)
+        hub_sock = os.path.join(dirs[0], 'hub.sock')
+        handles, hub = [], None
+        try:
+            with open(os.path.join(dirs[0], 'hub.log'), 'w') as log:
+                hub = subprocess.Popen(
+                    [sys.executable, KRUNPROC, 'hub', hub_sock,
+                     *[os.path.join(d, 'qemu.pid') for d in dirs]],
+                    start_new_session=True, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT)
+            for _ in range(100):
+                if os.path.exists(hub_sock):
+                    break
+                time.sleep(0.05)
+            else:
+                raise VMBackendError('krun backend: the private-network hub did '
+                                     f'not start (see {dirs[0]}/hub.log)')
+            for i, (net, c) in enumerate(zip(nets, cfgs)):
+                handles.append(self._start_vm(ids[i], keys, key, net, c, hub_sock))
+            time.sleep(2)
+            for h in handles:
+                if _qemu_pid(h.meta['qemu']['pidfile'], h.id) is None:
+                    with open(os.path.join(h.meta['qemu']['dir'], 'vmm.log')) as f:
+                        tail = f.read()[-2000:]
+                    raise VMBackendError(f'krun backend: {h.id} exited at start:\n{tail}')
+        except Exception:
+            for h in handles:
+                try:
+                    self.terminate(h)
+                except VMBackendError as e:
+                    print(f'== {e}')
+            if hub:
+                hub.terminate()
+            for i, d in zip(ids, dirs):
+                if i not in [h.id for h in handles]:
+                    shutil.rmtree(d, ignore_errors=True)
+            raise
+        return handles
+
+    def terminate(self, handle):
+        super().terminate(handle)
+        for s in glob.glob(os.path.join(handle.meta['qemu']['dir'], 'krun-net-*.sock')):
+            os.remove(s)
+
+
 BACKENDS = {
     'ssh': SshBackend,
     'command': CommandBackend,
     'openstack': OpenstackBackend,
     'qemu': QemuBackend,
+    'krun': KrunBackend,
 }
 
 
