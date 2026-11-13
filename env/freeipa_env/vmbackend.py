@@ -413,6 +413,38 @@ def _free_port(kind=socket.SOCK_STREAM) -> int:
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
 
+
+MCAST_GROUP = '230.0.0.1'
+
+
+def _mcast_works() -> bool:
+    """Can local processes exchange UDP multicast on this control node?
+
+    Containers (shared host netns, multicast routed out a real interface,
+    no CAP_NET_ADMIN) deliver a sent multicast packet to no local socket,
+    not even back to the sender. Detect that once instead of failing later
+    with ARP INCOMPLETE between the VMs.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('127.0.0.1', 0))
+            port = s.getsockname()[1]
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                         socket.inet_aton(MCAST_GROUP) +
+                         socket.inet_aton('127.0.0.1'))
+            s.settimeout(1.0)
+            s.sendto(b'ci-freeipa-probe', (MCAST_GROUP, port))
+            s.recvfrom(64)
+            return True
+    except OSError:
+        return False
+
+
+MCAST_OK = _mcast_works()
+
+
 def _free_vnc_display() -> int:
     """First VNC display n (TCP 5900+n) not already bound on loopback."""
     for n in range(1, 200):
@@ -701,6 +733,13 @@ class QemuBackend(VMBackend):
         disk = os.path.join(vmdir, 'disk.qcow2')
         seed = os.path.join(vmdir, 'seed.iso')
         port = _free_port()
+        # private NIC: one L2 segment shared by this run's VMs. Multicast
+        # socket when the control node supports it, else a chain of TCP
+        # socket netdevs on loopback (containers without multicast support).
+        if MCAST_OK:
+            priv_netdev = f'socket,id=priv,mcast={MCAST_GROUP}:{seg}'
+        else:
+            priv_netdev = c['priv_netdev']
         try:
             self._seed(vmdir, vm_id, keys, net)
             self._run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'qcow2',
@@ -718,8 +757,8 @@ class QemuBackend(VMBackend):
                        # ssh NIC: NAT with a forwarded port on the control node
                        '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22',
                        '-device', f'virtio-net-pci,netdev=net0,mac={net["mac_ssh"]}',
-                       # private NIC: multicast socket segment shared by this run
-                       '-netdev', f'socket,id=priv,mcast=230.0.0.1:{seg}',
+                       # private NIC: the segment shared by this run
+                       '-netdev', priv_netdev,
                        '-device', f'virtio-net-pci,netdev=priv,mac={net["mac_priv"]}'])
         except Exception:
             shutil.rmtree(vmdir, ignore_errors=True)
@@ -746,6 +785,21 @@ class QemuBackend(VMBackend):
         keys, key = self._pubkeys()
         # one private L2 segment per call: runs on the same host stay isolated
         seg = _free_port(socket.SOCK_DGRAM)
+        if MCAST_OK:
+            for c in cfgs:
+                c['priv_netdev'] = f'socket,id=priv,mcast={MCAST_GROUP}:{seg}'
+        else:
+            print('== qemu backend: multicast unavailable on this host, '
+                  'using TCP socket segments for the private NICs')
+            # a listening TCP netdev per VM; each later VM connects to the
+            # previous one: qemu socket netdevs chain into one L2 segment
+            ports = []
+            for c in cfgs:
+                ports.append(_free_port())
+                c['priv_netdev'] = f'socket,id=priv,listen=127.0.0.1:{ports[-1]}'
+            for i in range(1, len(cfgs)):
+                cfgs[i]['priv_netdev'] = \
+                    f'socket,id=priv,connect=127.0.0.1:{ports[i - 1]}'
         names = [c.get('name', f'vm{i + 1}') for i, c in enumerate(cfgs)]
         if len(set(names)) != len(names):
             raise VMBackendError(f'qemu backend: duplicate VM names: {names}')
