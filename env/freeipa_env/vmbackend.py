@@ -426,15 +426,19 @@ def _mcast_works() -> bool:
     not even back to the sender. Detect that once instead of failing later
     with ARP INCOMPLETE between the VMs.
     """
+    # Like qemu's mcast netdev: bound to the group and joined on the interface
+    # the kernel picks. A socket bound to 127.0.0.1 never receives a datagram
+    # sent to the group, so that probe always failed and every env fell back
+    # to the TCP chain, which only links two VMs.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', 0))
+            s.bind((MCAST_GROUP, 0))
             port = s.getsockname()[1]
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
             s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                          socket.inet_aton(MCAST_GROUP) +
-                         socket.inet_aton('127.0.0.1'))
+                         socket.inet_aton('0.0.0.0'))
             s.settimeout(1.0)
             s.sendto(b'ci-freeipa-probe', (MCAST_GROUP, port))
             s.recvfrom(64)
