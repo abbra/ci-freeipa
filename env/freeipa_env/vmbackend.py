@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from . import container as container_mode
 from . import containerdisk
 
 
@@ -629,6 +630,8 @@ class QemuBackend(VMBackend):
         return [{**base, **(o or {})} for o in over]
 
     def _check_host(self, cfgs):
+        if container_mode.in_container():
+            container_mode.prepare_tools()   # qemu-img, ISO tool on PATH
         for c in cfgs:
             image = c.get('image')
             if not image:
